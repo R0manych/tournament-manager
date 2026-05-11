@@ -72,6 +72,7 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
         m.Entity<TournamentParticipant>(b =>
         {
             b.HasKey(p => new { p.TournamentId, p.FighterId });
+            b.Property(p => p.Seed);
             b.Property(p => p.RegisteredAt).HasColumnType("timestamp with time zone");
 
             b.HasOne(p => p.Fighter)

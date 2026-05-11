@@ -27,5 +27,6 @@ public static class TournamentMappingExtensions
         p.Fighter.FirstName,
         p.Fighter.LastName,
         p.Fighter.Club,
+        p.Seed,
         p.RegisteredAt);
 }

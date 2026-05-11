@@ -126,6 +126,7 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
         {
             TournamentId = id,
             FighterId = req.FighterId,
+            Seed = req.Seed,
             RegisteredAt = DateTime.UtcNow
         };
 
@@ -134,7 +135,7 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
 
         var response = new ParticipantResponse(
             fighter.Id, fighter.FirstName, fighter.LastName,
-            fighter.Club, participant.RegisteredAt);
+            fighter.Club, req.Seed, participant.RegisteredAt);
 
         return Created($"api/v1/tournaments/{id}/participants/{fighter.Id}", response);
     }
@@ -151,4 +152,37 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
         await db.SaveChangesAsync(ct);
         return NoContent();
     }
+
+    [HttpPatch("{id:guid}/status")]
+    public async Task<IActionResult> SetStatus(Guid id, UpdateTournamentStatusRequest req, CancellationToken ct)
+    {
+        if (!Enum.TryParse<TournamentStatus>(req.Status, out var newStatus))
+            return Problem($"Invalid status value: '{req.Status}'.", statusCode: 400);
+
+        var tournament = await db.Tournaments
+            .Include(t => t.Participants)
+            .Include(t => t.Matches)
+            .FirstOrDefaultAsync(t => t.Id == id, ct);
+        if (tournament is null) return NotFound();
+
+        var (valid, error) = IsValidTransition(tournament.Status, newStatus);
+        if (!valid) return Problem(error, statusCode: 409);
+
+        tournament.Status = newStatus;
+        await db.SaveChangesAsync(ct);
+
+        return Ok(tournament.ToDetailResponse());
+    }
+
+    private static (bool valid, string error) IsValidTransition(TournamentStatus from, TournamentStatus to) =>
+        (from, to) switch
+        {
+            (TournamentStatus.Draft, TournamentStatus.Active) => (true, ""),
+            (TournamentStatus.Draft, TournamentStatus.Cancelled) => (true, ""),
+            (TournamentStatus.Active, TournamentStatus.Completed) => (true, ""),
+            (TournamentStatus.Active, TournamentStatus.Cancelled) => (true, ""),
+            (TournamentStatus.Completed, TournamentStatus.Active) => (true, ""),
+            (TournamentStatus.Cancelled, TournamentStatus.Draft) => (true, ""),
+            _ => (false, $"Cannot transition from {from} to {to}.")
+        };
 }

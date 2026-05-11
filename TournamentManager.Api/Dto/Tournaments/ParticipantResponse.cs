@@ -5,4 +5,5 @@ public record ParticipantResponse(
     string FirstName,
     string LastName,
     string? Club,
+    int? Seed,
     DateTime RegisteredAt);

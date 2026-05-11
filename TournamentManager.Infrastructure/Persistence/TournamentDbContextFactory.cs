@@ -7,7 +7,8 @@ public class TournamentDbContextFactory : IDesignTimeDbContextFactory<Tournament
 {
     public TournamentDbContext CreateDbContext(string[] args)
     {
-        var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__Postgres")
+        var connectionString = "Host=localhost;Port=5432;Database=tournament_manager;Username=postgres;Password=postgres"
+            //Environment.GetEnvironmentVariable("ConnectionStrings__Postgres")
             ?? throw new InvalidOperationException(
                 "Set ConnectionStrings__Postgres environment variable before running migrations.");
 
