@@ -302,13 +302,14 @@ public class TournamentFormatParser : ITournamentFormatParser
         {
             grandFinal = gfStr switch
             {
-                "simple" => GrandFinalMode.Simple,
-                "reset" => GrandFinalMode.Reset,
+                "simple"    => GrandFinalMode.Simple,
+                "reset"     => GrandFinalMode.Reset,
+                "advantage" => GrandFinalMode.Advantage,
                 _ => null,
             };
             if (grandFinal == null)
                 errors.Add(new FormatError(P(path, "grandFinal"), "invalid_value",
-                    $"'grandFinal' must be 'simple' or 'reset', got '{gfStr}'"));
+                    $"'grandFinal' must be 'simple', 'reset', or 'advantage', got '{gfStr}'"));
         }
 
         var ubNode = GetRequiredMapping(node, "upperBracket", path, errors);
@@ -347,8 +348,9 @@ public class TournamentFormatParser : ITournamentFormatParser
                 }
                 var source = GetRequiredString(slotNode, "source", slotPath, errors);
                 var rank = GetRequiredInt(slotNode, "rank", slotPath, errors, min: 1);
+                var entersAt = GetOptionalString(slotNode, "entersAt", slotPath, errors);
                 if (source != null && rank != null)
-                    slots.Add(new SlotSpec { Source = source, Rank = rank.Value });
+                    slots.Add(new SlotSpec { Source = source, Rank = rank.Value, EntersAt = entersAt });
             }
         }
 
@@ -411,7 +413,7 @@ public class TournamentFormatParser : ITournamentFormatParser
             switch (format.Phases[i])
             {
                 case RoundRobinPhase rrp:
-                    ValidateRoundRobin(rrp, i, errors);
+                    ValidateRoundRobin(rrp, i, format.Participants?.Count, errors);
                     break;
                 case SingleEliminationPhase sep:
                     ValidateSingleElimination(sep, i, format.Phases.Take(i).ToList(), errors);
@@ -423,9 +425,18 @@ public class TournamentFormatParser : ITournamentFormatParser
         }
     }
 
-    private static void ValidateRoundRobin(RoundRobinPhase phase, int idx, List<FormatError> errors)
+    private static void ValidateRoundRobin(RoundRobinPhase phase, int idx, int? participantsCount, List<FormatError> errors)
     {
         var path = $"phases[{idx}]";
+
+        if (participantsCount.HasValue)
+        {
+            var capacity = phase.Groups.Count * phase.Groups.Size;
+            if (capacity != participantsCount.Value)
+                errors.Add(new FormatError(P(path, "groups"), "groups_capacity_mismatch",
+                    $"groups.count × groups.size = {phase.Groups.Count} × {phase.Groups.Size} = {capacity}, but participants.count = {participantsCount.Value}"));
+        }
+
         var tbPath = P(path, "tieBreakers");
 
         if (phase.TieBreakers.Count == 0)
@@ -512,65 +523,133 @@ public class TournamentFormatParser : ITournamentFormatParser
         var ub = phase.UpperBracket;
         var lb = phase.LowerBracket;
 
-        // Slot counts
-        var ubSlotCount = ub.Slots.Count;
-        var ubSlotsValid = ubSlotCount >= 2 && IsPowerOfTwo(ubSlotCount);
-        if (!ubSlotsValid)
-            errors.Add(new FormatError(P(path, "upperBracket.slots"), "invalid_slot_count",
-                $"Upper bracket slot count ({ubSlotCount}) must be a power of 2 and ≥ 2"));
-
-        var lbSlotCount = lb.Slots.Count;
-        if (lbSlotCount != ubSlotCount)
-            errors.Add(new FormatError(P(path, "lowerBracket.slots"), "invalid_slot_count",
-                $"Lower bracket slot count ({lbSlotCount}) must equal upper bracket slot count ({ubSlotCount})"));
-
-        // Round counts: UB = log2(slots), LB = 2 * log2(slots)
-        if (ubSlotsValid)
-        {
-            var ubRoundCount = (int)Math.Log2(ubSlotCount);
-            if (ub.Rounds.Count != ubRoundCount)
-                errors.Add(new FormatError(P(path, "upperBracket.rounds"), "rounds_count_mismatch",
-                    $"Upper bracket must have {ubRoundCount} rounds for {ubSlotCount} slots, got {ub.Rounds.Count}"));
-
-            var expectedLbRounds = 2 * ubRoundCount;
-            if (lb.Rounds.Count != expectedLbRounds)
-                errors.Add(new FormatError(P(path, "lowerBracket.rounds"), "rounds_count_mismatch",
-                    $"Lower bracket must have {expectedLbRounds} rounds for {ubSlotCount} upper slots, got {lb.Rounds.Count}"));
-        }
-
-        // Collect UB round IDs
-        var ubRoundIds = new HashSet<string>(StringComparer.Ordinal);
+        // --- Collect UB round IDs (ordered list + set for lookup) ---
+        var ubRoundIdList = new List<string>(ub.Rounds.Count);
+        var ubRoundIdSet = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < ub.Rounds.Count; i++)
         {
-            if (!ubRoundIds.Add(ub.Rounds[i].Id))
+            var rid = ub.Rounds[i].Id;
+            if (!ubRoundIdSet.Add(rid))
                 errors.Add(new FormatError($"{path}.upperBracket.rounds[{i}].id", "duplicate_round_id",
-                    $"Round id '{ub.Rounds[i].Id}' is not unique in upper bracket"));
+                    $"Round id '{rid}' is not unique in upper bracket"));
+            else
+                ubRoundIdList.Add(rid);
         }
 
-        // Collect LB round IDs, validate dropdownsFrom
-        var lbRoundIds = new HashSet<string>(StringComparer.Ordinal);
+        // --- Collect LB round IDs ---
+        var lbRoundIdSet = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < lb.Rounds.Count; i++)
         {
-            var r = lb.Rounds[i];
-            if (!lbRoundIds.Add(r.Id))
+            var rid = lb.Rounds[i].Id;
+            if (!lbRoundIdSet.Add(rid))
                 errors.Add(new FormatError($"{path}.lowerBracket.rounds[{i}].id", "duplicate_round_id",
-                    $"Round id '{r.Id}' is not unique in lower bracket"));
-
-            if (r.DropdownsFrom != null && !ubRoundIds.Contains(r.DropdownsFrom))
-                errors.Add(new FormatError($"{path}.lowerBracket.rounds[{i}].dropdownsFrom", "unknown_round_id",
-                    $"dropdownsFrom '{r.DropdownsFrom}' does not reference a known upper bracket round id"));
+                    $"Round id '{rid}' is not unique in lower bracket"));
         }
 
-        // Cross-bracket round ID conflicts
-        foreach (var id in ubRoundIds.Intersect(lbRoundIds))
+        // --- Cross-bracket round ID conflicts ---
+        foreach (var id in ubRoundIdSet.Intersect(lbRoundIdSet))
             errors.Add(new FormatError(P(path, "rounds"), "duplicate_round_id",
                 $"Round id '{id}' appears in both upper and lower bracket"));
 
-        // Validate overrides
-        var validOverrideIds = new HashSet<string>(ubRoundIds, StringComparer.Ordinal);
-        validOverrideIds.UnionWith(lbRoundIds);
+        // --- Validate entersAt on UB slots ---
+        var firstUbRoundId = ubRoundIdList.Count > 0 ? ubRoundIdList[0] : null;
+        for (var i = 0; i < ub.Slots.Count; i++)
+        {
+            var slot = ub.Slots[i];
+            if (slot.EntersAt == null) continue;
+            var slotPath = $"{path}.upperBracket.slots[{i}]";
+            if (!ubRoundIdSet.Contains(slot.EntersAt))
+                errors.Add(new FormatError($"{slotPath}.entersAt", "unknown_round_id",
+                    $"entersAt '{slot.EntersAt}' does not reference a known upper bracket round id"));
+            else if (slot.EntersAt == firstUbRoundId)
+                errors.Add(new FormatError($"{slotPath}.entersAt", "enters_at_first_round",
+                    $"entersAt cannot reference the first round '{firstUbRoundId}' — a bye into the first round is meaningless"));
+        }
+
+        // --- UB round-by-round balance; compute match count (= losers) per UB round ---
+        // Slots without entersAt enter round 1; slots with entersAt enter the named round (bye).
+        var ubMatchesPerRound = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (ubRoundIdList.Count > 0)
+        {
+            // Count byes entering each named round
+            var byesByRound = new Dictionary<string, int>(StringComparer.Ordinal);
+            var directCount = 0;
+            foreach (var slot in ub.Slots)
+            {
+                if (slot.EntersAt == null)
+                    directCount++;
+                else if (ubRoundIdSet.Contains(slot.EntersAt) && slot.EntersAt != firstUbRoundId)
+                    byesByRound[slot.EntersAt] = byesByRound.GetValueOrDefault(slot.EntersAt, 0) + 1;
+            }
+
+            if (directCount % 2 != 0)
+                errors.Add(new FormatError($"{path}.upperBracket.slots", "invalid_slot_count",
+                    $"Upper bracket has {directCount} direct (first-round) slots — must be even"));
+
+            var prevWinners = directCount / 2;
+            ubMatchesPerRound[ubRoundIdList[0]] = prevWinners;
+
+            for (var i = 1; i < ubRoundIdList.Count; i++)
+            {
+                var roundId = ubRoundIdList[i];
+                var byes = byesByRound.GetValueOrDefault(roundId, 0);
+
+                if (byes > 0 && byes != prevWinners)
+                    errors.Add(new FormatError($"{path}.upperBracket.rounds[{i}]", "bye_carryover_mismatch",
+                        $"Upper bracket round '{roundId}': {byes} bye slot(s) vs {prevWinners} carry-over winner(s) from previous round — must be equal for 1-to-1 pairing"));
+
+                var total = prevWinners + byes;
+                if (total % 2 != 0)
+                    errors.Add(new FormatError($"{path}.upperBracket.rounds[{i}]", "invalid_slot_count",
+                        $"Upper bracket round '{roundId}': {prevWinners} carry-overs + {byes} byes = {total} — must be even"));
+                prevWinners = total / 2;
+                ubMatchesPerRound[roundId] = prevWinners;
+            }
+        }
+
+        // --- LB: validate dropdownsFrom references + round-by-round balance ---
+        // Each LB round's participant count = direct slots (first round only) + prev winners + losers from UB dropdown.
+        // Losers from a UB round = matches in that UB round = ubMatchesPerRound[roundId].
+        var usedDropdownRounds = new HashSet<string>(StringComparer.Ordinal);
+        {
+            var prevWinners = 0;
+            for (var i = 0; i < lb.Rounds.Count; i++)
+            {
+                var round = lb.Rounds[i];
+                var roundPath = $"{path}.lowerBracket.rounds[{i}]";
+                var direct = (i == 0) ? lb.Slots.Count : 0;
+                var dropdown = 0;
+
+                if (round.DropdownsFrom != null)
+                {
+                    if (!ubRoundIdSet.Contains(round.DropdownsFrom))
+                        errors.Add(new FormatError($"{roundPath}.dropdownsFrom", "unknown_round_id",
+                            $"dropdownsFrom '{round.DropdownsFrom}' does not reference a known upper bracket round id"));
+                    else if (!usedDropdownRounds.Add(round.DropdownsFrom))
+                        errors.Add(new FormatError($"{roundPath}.dropdownsFrom", "duplicate_dropdown",
+                            $"Upper bracket round '{round.DropdownsFrom}' is already used as dropdownsFrom in another lower bracket round"));
+                    else if (ubMatchesPerRound.TryGetValue(round.DropdownsFrom, out var ubMatches))
+                        dropdown = ubMatches;
+                }
+
+                var total = direct + prevWinners + dropdown;
+                if (total % 2 != 0)
+                    errors.Add(new FormatError(roundPath, "invalid_slot_count",
+                        $"Lower bracket round '{round.Id}': {direct} direct + {prevWinners} carry-overs + {dropdown} dropdowns = {total} — must be even"));
+                prevWinners = total / 2;
+            }
+        }
+
+        // --- Validate slot source / rank / cross-bracket duplicates (source phase, group codes, rank range) ---
+        var allSlotPairs = new HashSet<(string, int)>();
+        ValidateBracketSlots(ub.Slots, P(path, "upperBracket"), priorPhases, allSlotPairs, errors);
+        ValidateBracketSlots(lb.Slots, P(path, "lowerBracket"), priorPhases, allSlotPairs, errors);
+
+        // --- Validate overrides ---
+        var validOverrideIds = new HashSet<string>(ubRoundIdSet, StringComparer.Ordinal);
+        validOverrideIds.UnionWith(lbRoundIdSet);
         validOverrideIds.Add("grandFinal");
-        if (phase.GrandFinal == GrandFinalMode.Reset)
+        if (phase.GrandFinal is GrandFinalMode.Reset or GrandFinalMode.Advantage)
             validOverrideIds.Add("grandFinalReset");
 
         for (var i = 0; i < phase.Overrides.Count; i++)
@@ -579,11 +658,6 @@ public class TournamentFormatParser : ITournamentFormatParser
                 errors.Add(new FormatError($"{path}.overrides[{i}].roundId", "unknown_round_id",
                     $"Override references unknown round id '{phase.Overrides[i].RoundId}'"));
         }
-
-        // Validate slot seeding across both brackets (no duplicates across brackets)
-        var allSlotPairs = new HashSet<(string, int)>();
-        ValidateBracketSlots(ub.Slots, P(path, "upperBracket"), priorPhases, allSlotPairs, errors);
-        ValidateBracketSlots(lb.Slots, P(path, "lowerBracket"), priorPhases, allSlotPairs, errors);
     }
 
     private static void ValidateBracketSlots(

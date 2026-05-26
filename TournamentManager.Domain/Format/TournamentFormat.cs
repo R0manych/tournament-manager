@@ -88,6 +88,7 @@ public class SlotSpec
 {
     public string Source { get; set; } = null!;
     public int Rank { get; set; }
+    public string? EntersAt { get; set; }
 }
 
 public class RoundSpec(string id, string name)
@@ -110,6 +111,7 @@ public enum GrandFinalMode
 {
     [JsonStringEnumMemberName("simple")] Simple,
     [JsonStringEnumMemberName("reset")] Reset,
+    [JsonStringEnumMemberName("advantage")] Advantage,
 }
 
 public class BracketRoundSpec(string id, string name)
