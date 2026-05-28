@@ -18,7 +18,6 @@ public class Match
     public Guid? WinnerId { get; set; }
 
     public int? RoundDurationSeconds { get; set; }
-    public int? TotalRounds { get; set; }
     public int? MaxDoubles { get; set; }
     public int? MaxWarnings { get; set; }
 

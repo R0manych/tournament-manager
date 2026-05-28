@@ -88,7 +88,6 @@ public class TournamentFormatParser : ITournamentFormatParser
         new()
         {
             RoundDurationSeconds = GetOptionalInt(node, "roundDurationSeconds", path, errors, min: 1),
-            RoundsPerMatch = GetOptionalInt(node, "roundsPerMatch", path, errors, min: 1),
             MaxDoubles = GetOptionalInt(node, "maxDoubles", path, errors, min: 0),
             MaxWarnings = GetOptionalInt(node, "maxWarnings", path, errors, min: 0),
         };
@@ -135,6 +134,51 @@ public class TournamentFormatParser : ITournamentFormatParser
     {
         var id = GetRequiredString(node, "id", path, errors);
         var name = GetRequiredString(node, "name", path, errors, maxLength: 200);
+
+        RoundRobinSeedingSpec? seeding = null;
+        var seedingNode = GetOptionalMapping(node, "seeding", path, errors);
+        if (seedingNode != null)
+        {
+            var sPath = P(path, "seeding");
+            var from = GetRequiredString(seedingNode, "from", sPath, errors);
+            var seedGroupsNode = GetRequiredMapping(seedingNode, "groups", sPath, errors);
+            var groupsDict = new Dictionary<string, List<SlotSpec>>();
+
+            if (seedGroupsNode != null)
+            {
+                foreach (var kvp in seedGroupsNode.Children)
+                {
+                    if (kvp.Key is not YamlScalarNode keyNode) continue;
+                    var groupCode = keyNode.Value ?? "";
+                    var groupPath = $"{sPath}.groups.{groupCode}";
+
+                    if (kvp.Value is not YamlSequenceNode slotSeq)
+                    {
+                        errors.Add(new FormatError(groupPath, "invalid_type", $"Group '{groupCode}' slots must be a sequence"));
+                        continue;
+                    }
+
+                    var slots = new List<SlotSpec>();
+                    for (var i = 0; i < slotSeq.Children.Count; i++)
+                    {
+                        var slotPath = $"{groupPath}[{i}]";
+                        if (slotSeq.Children[i] is not YamlMappingNode slotNode)
+                        {
+                            errors.Add(new FormatError(slotPath, "invalid_type", "Slot must be a mapping"));
+                            continue;
+                        }
+                        var source = GetRequiredString(slotNode, "source", slotPath, errors);
+                        var rank = GetRequiredInt(slotNode, "rank", slotPath, errors, min: 1);
+                        if (source != null && rank != null)
+                            slots.Add(new SlotSpec { Source = source, Rank = rank.Value });
+                    }
+                    groupsDict[groupCode] = slots;
+                }
+            }
+
+            if (from != null)
+                seeding = new RoundRobinSeedingSpec { From = from, Groups = groupsDict };
+        }
 
         GroupsSpec? groups = null;
         var groupsNode = GetRequiredMapping(node, "groups", path, errors);
@@ -190,6 +234,7 @@ public class TournamentFormatParser : ITournamentFormatParser
         return new RoundRobinPhase
         {
             Id = id, Name = name,
+            Seeding = seeding,
             Groups = groups, PointsPerMatch = points, TieBreakers = tieBreakers,
         };
     }
@@ -282,7 +327,6 @@ public class TournamentFormatParser : ITournamentFormatParser
             {
                 RoundId = roundId,
                 RoundDurationSeconds = GetOptionalInt(ovNode, "roundDurationSeconds", ovPath, errors, min: 1),
-                RoundsPerMatch = GetOptionalInt(ovNode, "roundsPerMatch", ovPath, errors, min: 1),
                 MaxDoubles = GetOptionalInt(ovNode, "maxDoubles", ovPath, errors, min: 0),
                 MaxWarnings = GetOptionalInt(ovNode, "maxWarnings", ovPath, errors, min: 0),
             });
@@ -414,6 +458,8 @@ public class TournamentFormatParser : ITournamentFormatParser
             {
                 case RoundRobinPhase rrp:
                     ValidateRoundRobin(rrp, i, format.Participants?.Count, errors);
+                    if (rrp.Seeding != null)
+                        ValidateRoundRobinSeeding(rrp, i, format.Phases.Take(i).ToList(), errors);
                     break;
                 case SingleEliminationPhase sep:
                     ValidateSingleElimination(sep, i, format.Phases.Take(i).ToList(), errors);
@@ -429,7 +475,9 @@ public class TournamentFormatParser : ITournamentFormatParser
     {
         var path = $"phases[{idx}]";
 
-        if (participantsCount.HasValue)
+        // Phases with explicit seeding take their participants from a prior phase,
+        // so their capacity doesn't need to match the root participants.count.
+        if (phase.Seeding == null && participantsCount.HasValue)
         {
             var capacity = phase.Groups.Count * phase.Groups.Size;
             if (capacity != participantsCount.Value)
@@ -456,6 +504,87 @@ public class TournamentFormatParser : ITournamentFormatParser
         if (phase.TieBreakers[^1] != TieBreaker.Random)
             errors.Add(new FormatError(tbPath, "last_must_be_random",
                 "Last tie-breaker must be 'random' to guarantee termination"));
+    }
+
+    private static void ValidateRoundRobinSeeding(
+        RoundRobinPhase phase, int idx, List<PhaseSpec> priorPhases, List<FormatError> errors)
+    {
+        var path = $"phases[{idx}]";
+        var seeding = phase.Seeding!;
+        var sPath = P(path, "seeding");
+
+        var sourcePhase = priorPhases.FirstOrDefault(p => p.Id == seeding.From);
+        if (sourcePhase == null)
+        {
+            errors.Add(new FormatError(P(sPath, "from"), "unknown_phase",
+                $"Phase '{seeding.From}' not found among phases declared before this one"));
+            return;
+        }
+        if (sourcePhase is not RoundRobinPhase sourceRR)
+        {
+            errors.Add(new FormatError(P(sPath, "from"), "invalid_source_type",
+                $"Phase '{seeding.From}' must be of type roundRobin to be used as seeding source"));
+            return;
+        }
+
+        var expectedGroupCodes = Enumerable.Range(0, phase.Groups.Count)
+            .Select(i => ((char)('A' + i)).ToString())
+            .ToHashSet(StringComparer.Ordinal);
+
+        if (seeding.Groups.Count != phase.Groups.Count)
+            errors.Add(new FormatError(P(sPath, "groups"), "groups_count_mismatch",
+                $"seeding.groups has {seeding.Groups.Count} entries but groups.count = {phase.Groups.Count}"));
+
+        foreach (var code in seeding.Groups.Keys.Where(k => !expectedGroupCodes.Contains(k)))
+            errors.Add(new FormatError($"{sPath}.groups.{code}", "invalid_group_code",
+                $"Group '{code}' is not a valid group code for this phase (valid: {string.Join(", ", expectedGroupCodes)})"));
+
+        var validSourceGroupCodes = Enumerable.Range(0, sourceRR.Groups.Count)
+            .Select(i => ((char)('A' + i)).ToString())
+            .ToHashSet(StringComparer.Ordinal);
+
+        var allPairs = new HashSet<(string, int)>();
+
+        foreach (var (groupCode, slots) in seeding.Groups)
+        {
+            if (!expectedGroupCodes.Contains(groupCode)) continue;
+
+            var groupPath = $"{sPath}.groups.{groupCode}";
+
+            if (slots.Count != phase.Groups.Size)
+                errors.Add(new FormatError(groupPath, "group_size_mismatch",
+                    $"Group '{groupCode}' has {slots.Count} slots but groups.size = {phase.Groups.Size}"));
+
+            for (var i = 0; i < slots.Count; i++)
+            {
+                var slot = slots[i];
+                var slotPath = $"{groupPath}[{i}]";
+
+                var parts = slot.Source.Split('.', 2);
+                if (parts.Length != 2)
+                {
+                    errors.Add(new FormatError(P(slotPath, "source"), "invalid_source_format",
+                        $"Source '{slot.Source}' must have format '<phaseId>.<groupCode>'"));
+                    continue;
+                }
+
+                if (parts[0] != seeding.From)
+                    errors.Add(new FormatError(P(slotPath, "source"), "source_phase_mismatch",
+                        $"Source phase '{parts[0]}' must match seeding.from = '{seeding.From}'"));
+
+                if (!validSourceGroupCodes.Contains(parts[1]))
+                    errors.Add(new FormatError(P(slotPath, "source"), "invalid_group_code",
+                        $"Group '{parts[1]}' does not exist in phase '{sourceRR.Id}' (valid: {string.Join(", ", validSourceGroupCodes)})"));
+
+                if (slot.Rank < 1 || slot.Rank > sourceRR.Groups.Size)
+                    errors.Add(new FormatError(P(slotPath, "rank"), "rank_out_of_range",
+                        $"rank={slot.Rank} is out of range [1..{sourceRR.Groups.Size}] for phase '{sourceRR.Id}'"));
+
+                if (!allPairs.Add((slot.Source, slot.Rank)))
+                    errors.Add(new FormatError(slotPath, "duplicate_slot",
+                        $"Slot ({slot.Source}, rank={slot.Rank}) appears more than once across all seeding groups"));
+            }
+        }
     }
 
     private static void ValidateSingleElimination(

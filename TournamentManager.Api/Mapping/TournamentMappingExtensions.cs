@@ -8,7 +8,7 @@ public static class TournamentMappingExtensions
     public static TournamentSummaryResponse ToSummaryResponse(this Tournament t) => new(
         t.Id, t.Name, t.Description, t.Nomination, t.Location,
         t.StartDate, t.EndDate, t.Status.ToString(),
-        t.DefaultRoundDurationSeconds, t.DefaultRoundsPerMatch,
+        t.DefaultRoundDurationSeconds,
         t.DefaultMaxDoubles, t.DefaultMaxWarnings,
         t.CreatedAt,
         t.Participants.Count, t.Matches.Count);
@@ -16,7 +16,7 @@ public static class TournamentMappingExtensions
     public static TournamentResponse ToDetailResponse(this Tournament t) => new(
         t.Id, t.Name, t.Description, t.Nomination, t.Location,
         t.StartDate, t.EndDate, t.Status.ToString(),
-        t.DefaultRoundDurationSeconds, t.DefaultRoundsPerMatch,
+        t.DefaultRoundDurationSeconds,
         t.DefaultMaxDoubles, t.DefaultMaxWarnings,
         t.CreatedAt,
         t.Participants.Select(p => p.ToResponse()).ToList(),
@@ -24,9 +24,9 @@ public static class TournamentMappingExtensions
 
     public static ParticipantResponse ToResponse(this TournamentParticipant p) => new(
         p.FighterId,
-        p.Fighter.FirstName,
-        p.Fighter.LastName,
-        p.Fighter.Club,
+        p.Fighter?.FirstName,
+        p.Fighter?.LastName,
+        p.Fighter?.Club,
         p.Seed,
         p.RegisteredAt);
 }

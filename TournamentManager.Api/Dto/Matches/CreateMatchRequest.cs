@@ -5,6 +5,5 @@ public record CreateMatchRequest(
     Guid Fighter2Id,
     DateTime? ScheduledAt,
     int? RoundDurationSeconds,
-    int? TotalRounds,
     int? MaxDoubles,
     int? MaxWarnings);

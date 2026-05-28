@@ -70,7 +70,6 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             ScheduledAt = req.ScheduledAt,
             Status = MatchStatus.Scheduled,
             RoundDurationSeconds = req.RoundDurationSeconds,
-            TotalRounds = req.TotalRounds,
             MaxDoubles = req.MaxDoubles,
             MaxWarnings = req.MaxWarnings,
             CreatedAt = DateTime.UtcNow
@@ -94,7 +93,6 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         match.ScheduledAt = req.ScheduledAt;
         match.RoundDurationSeconds = req.RoundDurationSeconds;
-        match.TotalRounds = req.TotalRounds;
         match.MaxDoubles = req.MaxDoubles;
         match.MaxWarnings = req.MaxWarnings;
 
@@ -180,10 +178,6 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         if (match.Status != MatchStatus.InProgress)
             return Problem("Can only advance round when match is InProgress.", statusCode: 409);
 
-        var effectiveTotalRounds = match.TotalRounds ?? match.Tournament.DefaultRoundsPerMatch;
-        if (effectiveTotalRounds.HasValue && match.CurrentRoundNumber >= effectiveTotalRounds.Value)
-            return Problem($"Already at the last round ({effectiveTotalRounds.Value}).", statusCode: 409);
-
         match.CurrentRoundNumber++;
         match.CurrentRoundStartedAt = DateTime.UtcNow;
 
@@ -268,7 +262,6 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
                         Fighter2Id = group[j],
                         Status = MatchStatus.Scheduled,
                         RoundDurationSeconds = def?.RoundDurationSeconds,
-                        TotalRounds = def?.RoundsPerMatch,
                         MaxDoubles = def?.MaxDoubles,
                         MaxWarnings = def?.MaxWarnings,
                         CreatedAt = now,

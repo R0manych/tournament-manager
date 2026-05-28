@@ -10,6 +10,5 @@ public record CreateTournamentRequest(
     DateOnly StartDate,
     DateOnly EndDate,
     [Range(1, int.MaxValue)] int? DefaultRoundDurationSeconds,
-    [Range(1, int.MaxValue)] int? DefaultRoundsPerMatch,
     [Range(0, int.MaxValue)] int? DefaultMaxDoubles,
     [Range(0, int.MaxValue)] int? DefaultMaxWarnings);

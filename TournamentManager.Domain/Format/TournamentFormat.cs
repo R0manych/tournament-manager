@@ -15,7 +15,6 @@ public class TournamentFormat
 public class MatchDefaults
 {
     public int? RoundDurationSeconds { get; set; }
-    public int? RoundsPerMatch { get; set; }
     public int? MaxDoubles { get; set; }
     public int? MaxWarnings { get; set; }
 }
@@ -45,6 +44,7 @@ public abstract class PhaseSpec
 
 public class RoundRobinPhase : PhaseSpec
 {
+    public RoundRobinSeedingSpec? Seeding { get; set; }
     public GroupsSpec Groups { get; set; } = null!;
     public PointsRule PointsPerMatch { get; set; } = null!;
     public List<TieBreaker> TieBreakers { get; set; } = new();
@@ -54,6 +54,12 @@ public class GroupsSpec
 {
     public int Count { get; set; }
     public int Size { get; set; }
+}
+
+public class RoundRobinSeedingSpec
+{
+    public string From { get; set; } = null!;
+    public Dictionary<string, List<SlotSpec>> Groups { get; set; } = new();
 }
 
 public class PointsRule
@@ -101,7 +107,6 @@ public class RoundOverride
 {
     public string RoundId { get; set; } = null!;
     public int? RoundDurationSeconds { get; set; }
-    public int? RoundsPerMatch { get; set; }
     public int? MaxDoubles { get; set; }
     public int? MaxWarnings { get; set; }
 }

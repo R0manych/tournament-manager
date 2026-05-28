@@ -15,7 +15,6 @@ public class Tournament
     public TournamentStatus Status { get; set; }
 
     public int? DefaultRoundDurationSeconds { get; set; }
-    public int? DefaultRoundsPerMatch { get; set; }
     public int? DefaultMaxDoubles { get; set; }
     public int? DefaultMaxWarnings { get; set; }
 

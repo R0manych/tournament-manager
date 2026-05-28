@@ -10,7 +10,6 @@ public record TournamentResponse(
     DateOnly EndDate,
     string Status,
     int? DefaultRoundDurationSeconds,
-    int? DefaultRoundsPerMatch,
     int? DefaultMaxDoubles,
     int? DefaultMaxWarnings,
     DateTime CreatedAt,

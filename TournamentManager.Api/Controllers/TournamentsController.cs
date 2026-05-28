@@ -22,7 +22,7 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
             .Select(t => new TournamentSummaryResponse(
                 t.Id, t.Name, t.Description, t.Nomination, t.Location,
                 t.StartDate, t.EndDate, t.Status.ToString(),
-                t.DefaultRoundDurationSeconds, t.DefaultRoundsPerMatch,
+                t.DefaultRoundDurationSeconds,
                 t.DefaultMaxDoubles, t.DefaultMaxWarnings,
                 t.CreatedAt,
                 t.Participants.Count, t.Matches.Count))
@@ -60,7 +60,6 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
             EndDate = req.EndDate,
             Status = TournamentStatus.Draft,
             DefaultRoundDurationSeconds = req.DefaultRoundDurationSeconds,
-            DefaultRoundsPerMatch = req.DefaultRoundsPerMatch,
             DefaultMaxDoubles = req.DefaultMaxDoubles,
             DefaultMaxWarnings = req.DefaultMaxWarnings,
             CreatedAt = DateTime.UtcNow
@@ -88,7 +87,6 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
         tournament.StartDate = req.StartDate;
         tournament.EndDate = req.EndDate;
         tournament.DefaultRoundDurationSeconds = req.DefaultRoundDurationSeconds;
-        tournament.DefaultRoundsPerMatch = req.DefaultRoundsPerMatch;
         tournament.DefaultMaxDoubles = req.DefaultMaxDoubles;
         tournament.DefaultMaxWarnings = req.DefaultMaxWarnings;
 

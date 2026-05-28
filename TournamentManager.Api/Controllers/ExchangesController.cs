@@ -31,12 +31,6 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
         if (req.RoundNumber < 1)
             return Problem("RoundNumber must be >= 1.", statusCode: 400);
 
-        var effectiveTotalRounds = match.TotalRounds ?? match.Tournament.DefaultRoundsPerMatch;
-        if (effectiveTotalRounds.HasValue && req.RoundNumber > effectiveTotalRounds.Value)
-            return Problem(
-                $"RoundNumber {req.RoundNumber} exceeds effective total rounds {effectiveTotalRounds.Value}.",
-                statusCode: 400);
-
         var nextSequence = match.Exchanges.Count == 0 ? 1 : match.Exchanges.Max(e => e.Sequence) + 1;
 
         var exchange = new Exchange
@@ -81,12 +75,6 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
 
         if (req.RoundNumber < 1)
             return Problem("RoundNumber must be >= 1.", statusCode: 400);
-
-        var effectiveTotalRounds = match.TotalRounds ?? match.Tournament.DefaultRoundsPerMatch;
-        if (effectiveTotalRounds.HasValue && req.RoundNumber > effectiveTotalRounds.Value)
-            return Problem(
-                $"RoundNumber {req.RoundNumber} exceeds effective total rounds {effectiveTotalRounds.Value}.",
-                statusCode: 400);
 
         match.Score1 = match.Score1 - exchange.Points1 + req.Points1;
         match.Score2 = match.Score2 - exchange.Points2 + req.Points2;
