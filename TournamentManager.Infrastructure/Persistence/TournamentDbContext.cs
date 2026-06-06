@@ -100,6 +100,7 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
             b.HasOne(x => x.Fighter2)
                 .WithMany()
                 .HasForeignKey(x => x.Fighter2Id)
+                .IsRequired(false)
                 .OnDelete(DeleteBehavior.Restrict);
 
             b.HasMany(x => x.Exchanges)
@@ -113,7 +114,7 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
 
             b.ToTable(t => t.HasCheckConstraint(
                 "CK_Match_Fighter1NotEqualFighter2",
-                "\"Fighter1Id\" <> \"Fighter2Id\""));
+                "\"Fighter2Id\" IS NULL OR \"Fighter1Id\" <> \"Fighter2Id\""));
         });
 
         // Exchange

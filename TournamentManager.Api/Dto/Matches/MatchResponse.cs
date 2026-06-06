@@ -4,7 +4,7 @@ public record MatchResponse(
     Guid Id,
     Guid TournamentId,
     Guid Fighter1Id,
-    Guid Fighter2Id,
+    Guid? Fighter2Id,
     DateTime? ScheduledAt,
     string Status,
     int Score1,

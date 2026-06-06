@@ -36,6 +36,7 @@ public enum SeedingMode
 [JsonDerivedType(typeof(RoundRobinPhase), "roundRobin")]
 [JsonDerivedType(typeof(SingleEliminationPhase), "singleElimination")]
 [JsonDerivedType(typeof(DoubleEliminationPhase), "doubleElimination")]
+[JsonDerivedType(typeof(SwissPhase), "swiss")]
 public abstract class PhaseSpec
 {
     public string Id { get; set; } = null!;
@@ -73,6 +74,11 @@ public class PointsRule
 public enum TieBreaker
 {
     [JsonStringEnumMemberName("scoreDifference")] ScoreDifference,
+    [JsonStringEnumMemberName("buchholz")] Buchholz,
+    [JsonStringEnumMemberName("buchholzCut1")] BuchholzCut1,
+    [JsonStringEnumMemberName("sonnebornBerger")] SonnebornBerger,
+    [JsonStringEnumMemberName("opponentWinRate")] OpponentWinRate,
+    [JsonStringEnumMemberName("cumulative")] Cumulative,
     [JsonStringEnumMemberName("random")] Random,
 }
 
@@ -88,6 +94,28 @@ public class SeedingSpec
 {
     public string From { get; set; } = null!;
     public List<SlotSpec> Slots { get; set; } = new();
+    public TakeSpec? Take { get; set; }
+    public BracketSizing BracketSize { get; set; } = BracketSizing.Explicit;
+}
+
+public class TakeSpec
+{
+    public TakeMode Mode { get; set; }
+    public List<int>? Ranks { get; set; }
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum TakeMode
+{
+    [JsonStringEnumMemberName("qualified")] Qualified,
+    [JsonStringEnumMemberName("ranks")] Ranks,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum BracketSizing
+{
+    [JsonStringEnumMemberName("explicit")] Explicit,
+    [JsonStringEnumMemberName("auto")] Auto,
 }
 
 public class SlotSpec
@@ -138,4 +166,70 @@ public class DoubleEliminationPhase : PhaseSpec
     public BracketSpec UpperBracket { get; set; } = null!;
     public BracketSpec LowerBracket { get; set; } = null!;
     public List<RoundOverride> Overrides { get; set; } = new();
+}
+
+public class SwissPhase : PhaseSpec
+{
+    public GroupsSpec? Groups { get; set; }
+    public SeedingSpec? Seeding { get; set; }
+    public int? Rounds { get; set; }
+    public QualificationSpec? Qualification { get; set; }
+    public PairingSpec Pairing { get; set; } = new();
+    public PointsRule PointsPerMatch { get; set; } = null!;
+    public List<TieBreaker> TieBreakers { get; set; } = new();
+    public List<RoundOverride> Overrides { get; set; } = new();
+}
+
+public class QualificationSpec
+{
+    public int WinsToQualify { get; set; }
+    public int LossesToEliminate { get; set; }
+    public int? MaxRounds { get; set; }
+}
+
+public class PairingSpec
+{
+    public FirstRoundPairing FirstRound { get; set; } = FirstRoundPairing.Fold;
+    public bool AvoidRematch { get; set; } = true;
+    public FloatPolicy FloatPolicy { get; set; } = FloatPolicy.DownLowest;
+    public ByePolicy ByePolicy { get; set; } = ByePolicy.LowestRank;
+    public ByeResult ByeResult { get; set; } = ByeResult.Win;
+    public PairingSystem System { get; set; } = PairingSystem.Dutch;
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum FirstRoundPairing
+{
+    [JsonStringEnumMemberName("fold")] Fold,
+    [JsonStringEnumMemberName("adjacent")] Adjacent,
+    [JsonStringEnumMemberName("random")] Random,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum FloatPolicy
+{
+    [JsonStringEnumMemberName("downLowest")] DownLowest,
+    [JsonStringEnumMemberName("downHighest")] DownHighest,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ByePolicy
+{
+    [JsonStringEnumMemberName("lowestRank")] LowestRank,
+    [JsonStringEnumMemberName("highestRank")] HighestRank,
+    [JsonStringEnumMemberName("random")] Random,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ByeResult
+{
+    [JsonStringEnumMemberName("win")] Win,
+    [JsonStringEnumMemberName("draw")] Draw,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum PairingSystem
+{
+    [JsonStringEnumMemberName("dutch")] Dutch,
+    [JsonStringEnumMemberName("monrad")] Monrad,
 }

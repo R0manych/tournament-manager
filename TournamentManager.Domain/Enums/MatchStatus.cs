@@ -5,5 +5,6 @@ public enum MatchStatus
     Scheduled,
     InProgress,
     Completed,
-    Cancelled
+    Cancelled,
+    WalkoverWin
 }

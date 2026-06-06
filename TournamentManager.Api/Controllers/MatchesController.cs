@@ -48,7 +48,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var tournament = await db.Tournaments.FindAsync([tournamentId], ct);
         if (tournament is null) return NotFound();
 
-        if (req.Fighter1Id == req.Fighter2Id)
+        if (req.Fighter2Id.HasValue && req.Fighter1Id == req.Fighter2Id.Value)
             return Problem("Fighter1 and Fighter2 must be different.", statusCode: 400);
 
         var f1InTournament = await db.TournamentParticipants
@@ -56,10 +56,16 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         if (!f1InTournament)
             return Problem($"Fighter {req.Fighter1Id} is not registered in this tournament.", statusCode: 400);
 
-        var f2InTournament = await db.TournamentParticipants
-            .AnyAsync(p => p.TournamentId == tournamentId && p.FighterId == req.Fighter2Id, ct);
-        if (!f2InTournament)
-            return Problem($"Fighter {req.Fighter2Id} is not registered in this tournament.", statusCode: 400);
+        if (req.Fighter2Id.HasValue)
+        {
+            var f2InTournament = await db.TournamentParticipants
+                .AnyAsync(p => p.TournamentId == tournamentId && p.FighterId == req.Fighter2Id.Value, ct);
+            if (!f2InTournament)
+                return Problem($"Fighter {req.Fighter2Id} is not registered in this tournament.", statusCode: 400);
+        }
+
+        var now = DateTime.UtcNow;
+        var isBye = !req.Fighter2Id.HasValue;
 
         var match = new Match
         {
@@ -68,11 +74,14 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             Fighter1Id = req.Fighter1Id,
             Fighter2Id = req.Fighter2Id,
             ScheduledAt = req.ScheduledAt,
-            Status = MatchStatus.Scheduled,
+            Status = isBye ? MatchStatus.WalkoverWin : MatchStatus.Scheduled,
+            WinnerId = isBye ? req.Fighter1Id : null,
+            StartedAt = isBye ? now : null,
+            EndedAt = isBye ? now : null,
             RoundDurationSeconds = req.RoundDurationSeconds,
             MaxDoubles = req.MaxDoubles,
             MaxWarnings = req.MaxWarnings,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = now
         };
 
         db.Matches.Add(match);
@@ -231,9 +240,15 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         if (allIds.Distinct().Count() != allIds.Count)
             return Problem("Fighter appears in more than one group or twice in the same group.", statusCode: 400);
 
-        // Existing pairs for idempotency (normalised: smaller GUID first)
+        // Existing pairs for idempotency (normalised: smaller GUID first).
+        // Walkovers (Fighter2Id == null) are tracked separately by Fighter1Id.
         var existingPairs = tournament.Matches
-            .Select(m => NormPair(m.Fighter1Id, m.Fighter2Id))
+            .Where(m => m.Fighter2Id.HasValue)
+            .Select(m => NormPair(m.Fighter1Id, m.Fighter2Id!.Value))
+            .ToHashSet();
+        var existingWalkovers = tournament.Matches
+            .Where(m => !m.Fighter2Id.HasValue)
+            .Select(m => m.Fighter1Id)
             .ToHashSet();
 
         var created = new List<Match>();
@@ -243,6 +258,33 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         foreach (var group in req.Groups)
         {
+            // Singleton group → walkover for the sole fighter.
+            if (group.Count == 1)
+            {
+                if (!existingWalkovers.Add(group[0]))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                created.Add(new Match
+                {
+                    Id = Guid.NewGuid(),
+                    TournamentId = tournamentId,
+                    Fighter1Id = group[0],
+                    Fighter2Id = null,
+                    Status = MatchStatus.WalkoverWin,
+                    WinnerId = group[0],
+                    StartedAt = now,
+                    EndedAt = now,
+                    RoundDurationSeconds = def?.RoundDurationSeconds,
+                    MaxDoubles = def?.MaxDoubles,
+                    MaxWarnings = def?.MaxWarnings,
+                    CreatedAt = now,
+                });
+                continue;
+            }
+
             for (int i = 0; i < group.Count; i++)
             {
                 for (int j = i + 1; j < group.Count; j++)

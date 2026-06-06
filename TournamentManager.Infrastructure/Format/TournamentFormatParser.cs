@@ -6,12 +6,21 @@ namespace TournamentManager.Infrastructure.Format;
 
 public class TournamentFormatParser : ITournamentFormatParser
 {
-    private static readonly string[] SupportedVersions = ["0.1", "0.2"];
+    private static readonly string[] SupportedVersions = ["0.1", "0.2", "0.3"];
+    private const string SwissMinVersion = "0.3";
     private static readonly Regex PhaseIdPattern = new(@"^[a-zA-Z][a-zA-Z0-9_]*$", RegexOptions.Compiled);
+
+    private static readonly HashSet<TieBreaker> RoundRobinTieBreakers =
+        [TieBreaker.ScoreDifference, TieBreaker.Random];
+    private static readonly HashSet<TieBreaker> SwissTieBreakers =
+        [TieBreaker.ScoreDifference, TieBreaker.Buchholz, TieBreaker.BuchholzCut1,
+         TieBreaker.SonnebornBerger, TieBreaker.OpponentWinRate, TieBreaker.Cumulative,
+         TieBreaker.Random];
 
     public FormatParseResult Parse(string yaml)
     {
         var errors = new List<FormatError>();
+        var warnings = new List<FormatError>();
 
         YamlMappingNode root;
         try
@@ -21,28 +30,28 @@ public class TournamentFormatParser : ITournamentFormatParser
             if (stream.Documents.Count == 0)
             {
                 errors.Add(new FormatError("", "empty_document", "YAML document is empty"));
-                return new FormatParseResult(false, null, errors);
+                return new FormatParseResult(false, null, errors, warnings);
             }
             if (stream.Documents[0].RootNode is not YamlMappingNode rootNode)
             {
                 errors.Add(new FormatError("", "invalid_root", "Root document must be a YAML mapping"));
-                return new FormatParseResult(false, null, errors);
+                return new FormatParseResult(false, null, errors, warnings);
             }
             root = rootNode;
         }
         catch (Exception ex)
         {
             errors.Add(new FormatError("", "yaml_parse_error", $"Failed to parse YAML: {ex.Message}"));
-            return new FormatParseResult(false, null, errors);
+            return new FormatParseResult(false, null, errors, warnings);
         }
 
         var format = MapDocument(root, errors);
 
         if (errors.Count > 0)
-            return new FormatParseResult(false, null, errors);
+            return new FormatParseResult(false, null, errors, warnings);
 
-        ValidateSemantic(format!, errors);
-        return new FormatParseResult(errors.Count == 0, errors.Count == 0 ? format : null, errors);
+        ValidateSemantic(format!, errors, warnings);
+        return new FormatParseResult(errors.Count == 0, errors.Count == 0 ? format : null, errors, warnings);
     }
 
     // -------------------------------------------------------------------------
@@ -76,7 +85,7 @@ public class TournamentFormatParser : ITournamentFormatParser
                     errors.Add(new FormatError(phasePath, "invalid_type", "Each phase must be a mapping"));
                     continue;
                 }
-                var phase = MapPhase(phaseNode, phasePath, errors);
+                var phase = MapPhase(phaseNode, phasePath, format.FormatVersion, errors);
                 if (phase != null) format.Phases.Add(phase);
             }
         }
@@ -115,7 +124,7 @@ public class TournamentFormatParser : ITournamentFormatParser
         return new ParticipantsSpec { Count = count.Value, Seeding = seeding.Value };
     }
 
-    private static PhaseSpec? MapPhase(YamlMappingNode node, string path, List<FormatError> errors)
+    private static PhaseSpec? MapPhase(YamlMappingNode node, string path, string formatVersion, List<FormatError> errors)
     {
         var typeStr = GetRequiredString(node, "type", path, errors);
         if (typeStr == null) return null;
@@ -125,8 +134,11 @@ public class TournamentFormatParser : ITournamentFormatParser
             "roundRobin" => MapRoundRobinPhase(node, path, errors),
             "singleElimination" => MapSingleEliminationPhase(node, path, errors),
             "doubleElimination" => MapDoubleEliminationPhase(node, path, errors),
+            "swiss" when IsAtLeast(formatVersion, SwissMinVersion) => MapSwissPhase(node, path, errors),
+            "swiss" => Err<PhaseSpec>(errors, P(path, "type"), "unknown_phase_type",
+                $"Phase type 'swiss' requires formatVersion ≥ {SwissMinVersion}; got '{formatVersion}'"),
             _ => Err<PhaseSpec>(errors, P(path, "type"), "unknown_phase_type",
-                $"Unknown phase type '{typeStr}'; supported: roundRobin, singleElimination, doubleElimination"),
+                $"Unknown phase type '{typeStr}'; supported: roundRobin, singleElimination, doubleElimination, swiss"),
         };
     }
 
@@ -203,31 +215,10 @@ public class TournamentFormatParser : ITournamentFormatParser
                 points = new PointsRule { Win = win.Value, Draw = draw.Value, Loss = loss.Value };
         }
 
-        var tieBreakers = new List<TieBreaker>();
         var tbSeq = GetRequiredSequence(node, "tieBreakers", path, errors);
-        if (tbSeq != null)
-        {
-            for (var i = 0; i < tbSeq.Children.Count; i++)
-            {
-                var tbPath = $"{path}.tieBreakers[{i}]";
-                if (tbSeq.Children[i] is not YamlScalarNode scalar)
-                {
-                    errors.Add(new FormatError(tbPath, "invalid_type", "Tie-breaker must be a string"));
-                    continue;
-                }
-                TieBreaker? tb = scalar.Value switch
-                {
-                    "scoreDifference" => TieBreaker.ScoreDifference,
-                    "random" => TieBreaker.Random,
-                    _ => null,
-                };
-                if (tb == null)
-                    errors.Add(new FormatError(tbPath, "invalid_value",
-                        $"Unknown tie-breaker '{scalar.Value}'; supported: scoreDifference, random"));
-                else
-                    tieBreakers.Add(tb.Value);
-            }
-        }
+        var tieBreakers = tbSeq != null
+            ? MapTieBreakers(tbSeq, path, RoundRobinTieBreakers, errors)
+            : new List<TieBreaker>();
 
         if (id == null || name == null || groups == null || points == null) return null;
 
@@ -270,8 +261,11 @@ public class TournamentFormatParser : ITournamentFormatParser
                 }
             }
 
+            var take = MapTakeSpec(seedingNode, sPath, errors);
+            var bracketSize = MapBracketSize(seedingNode, sPath, errors);
+
             if (from != null)
-                seeding = new SeedingSpec { From = from, Slots = slots };
+                seeding = new SeedingSpec { From = from, Slots = slots, Take = take, BracketSize = bracketSize };
         }
 
         List<RoundSpec>? rounds = null;
@@ -421,11 +415,316 @@ public class TournamentFormatParser : ITournamentFormatParser
         return new BracketSpec { Slots = slots, Rounds = rounds };
     }
 
+    private static SwissPhase? MapSwissPhase(YamlMappingNode node, string path, List<FormatError> errors)
+    {
+        var id = GetRequiredString(node, "id", path, errors);
+        var name = GetRequiredString(node, "name", path, errors, maxLength: 200);
+
+        GroupsSpec? groups = null;
+        var groupsNode = GetOptionalMapping(node, "groups", path, errors);
+        if (groupsNode != null)
+        {
+            var gPath = P(path, "groups");
+            var count = GetRequiredInt(groupsNode, "count", gPath, errors, min: 1, max: 26);
+            var size = GetRequiredInt(groupsNode, "size", gPath, errors, min: 2);
+            if (count != null && size != null)
+                groups = new GroupsSpec { Count = count.Value, Size = size.Value };
+        }
+
+        SeedingSpec? seeding = null;
+        var seedingNode = GetOptionalMapping(node, "seeding", path, errors);
+        if (seedingNode != null)
+        {
+            var sPath = P(path, "seeding");
+            var from = GetRequiredString(seedingNode, "from", sPath, errors);
+
+            var slots = new List<SlotSpec>();
+            var slotsSeq = GetOptionalSequence(seedingNode, "slots", sPath, errors);
+            if (slotsSeq != null)
+            {
+                for (var i = 0; i < slotsSeq.Children.Count; i++)
+                {
+                    var slotPath = $"{sPath}.slots[{i}]";
+                    if (slotsSeq.Children[i] is not YamlMappingNode slotNode)
+                    {
+                        errors.Add(new FormatError(slotPath, "invalid_type", "Slot must be a mapping"));
+                        continue;
+                    }
+                    var source = GetRequiredString(slotNode, "source", slotPath, errors);
+                    var rank = GetRequiredInt(slotNode, "rank", slotPath, errors, min: 1);
+                    if (source != null && rank != null)
+                        slots.Add(new SlotSpec { Source = source, Rank = rank.Value });
+                }
+            }
+
+            var take = MapTakeSpec(seedingNode, sPath, errors);
+            var bracketSize = MapBracketSize(seedingNode, sPath, errors);
+
+            if (from != null)
+                seeding = new SeedingSpec { From = from, Slots = slots, Take = take, BracketSize = bracketSize };
+        }
+
+        var rounds = GetOptionalInt(node, "rounds", path, errors, min: 1);
+
+        QualificationSpec? qualification = null;
+        var qualNode = GetOptionalMapping(node, "qualification", path, errors);
+        if (qualNode != null)
+        {
+            var qPath = P(path, "qualification");
+            var wins = GetRequiredInt(qualNode, "winsToQualify", qPath, errors, min: 1);
+            var losses = GetRequiredInt(qualNode, "lossesToEliminate", qPath, errors, min: 1);
+            var maxRounds = GetOptionalInt(qualNode, "maxRounds", qPath, errors, min: 1);
+            if (wins != null && losses != null)
+                qualification = new QualificationSpec
+                {
+                    WinsToQualify = wins.Value,
+                    LossesToEliminate = losses.Value,
+                    MaxRounds = maxRounds,
+                };
+        }
+
+        var pairing = new PairingSpec();
+        var pairingNode = GetOptionalMapping(node, "pairing", path, errors);
+        if (pairingNode != null)
+            pairing = MapPairingSpec(pairingNode, P(path, "pairing"), errors);
+
+        PointsRule? points = null;
+        var pointsNode = GetRequiredMapping(node, "pointsPerMatch", path, errors);
+        if (pointsNode != null)
+        {
+            var pPath = P(path, "pointsPerMatch");
+            var win = GetRequiredInt(pointsNode, "win", pPath, errors, min: 0);
+            var draw = GetRequiredInt(pointsNode, "draw", pPath, errors, min: 0);
+            var loss = GetRequiredInt(pointsNode, "loss", pPath, errors, min: 0);
+            if (win != null && draw != null && loss != null)
+                points = new PointsRule { Win = win.Value, Draw = draw.Value, Loss = loss.Value };
+        }
+
+        var tbSeq = GetRequiredSequence(node, "tieBreakers", path, errors);
+        var tieBreakers = tbSeq != null
+            ? MapTieBreakers(tbSeq, path, SwissTieBreakers, errors)
+            : new List<TieBreaker>();
+
+        var overrides = MapOverrides(node, path, errors);
+
+        if (id == null || name == null || points == null) return null;
+
+        return new SwissPhase
+        {
+            Id = id, Name = name,
+            Groups = groups,
+            Seeding = seeding,
+            Rounds = rounds,
+            Qualification = qualification,
+            Pairing = pairing,
+            PointsPerMatch = points,
+            TieBreakers = tieBreakers,
+            Overrides = overrides,
+        };
+    }
+
+    private static PairingSpec MapPairingSpec(YamlMappingNode node, string path, List<FormatError> errors)
+    {
+        var p = new PairingSpec();
+
+        var first = GetOptionalString(node, "firstRound", path, errors);
+        if (first != null)
+        {
+            p.FirstRound = first switch
+            {
+                "fold" => FirstRoundPairing.Fold,
+                "adjacent" => FirstRoundPairing.Adjacent,
+                "random" => FirstRoundPairing.Random,
+                _ => p.FirstRound,
+            };
+            if (first is not "fold" and not "adjacent" and not "random")
+                errors.Add(new FormatError(P(path, "firstRound"), "invalid_value",
+                    $"'firstRound' must be 'fold', 'adjacent', or 'random'; got '{first}'"));
+        }
+
+        var avoid = GetOptionalBool(node, "avoidRematch", path, errors);
+        if (avoid.HasValue) p.AvoidRematch = avoid.Value;
+
+        var floatStr = GetOptionalString(node, "floatPolicy", path, errors);
+        if (floatStr != null)
+        {
+            p.FloatPolicy = floatStr switch
+            {
+                "downLowest" => FloatPolicy.DownLowest,
+                "downHighest" => FloatPolicy.DownHighest,
+                _ => p.FloatPolicy,
+            };
+            if (floatStr is not "downLowest" and not "downHighest")
+                errors.Add(new FormatError(P(path, "floatPolicy"), "invalid_value",
+                    $"'floatPolicy' must be 'downLowest' or 'downHighest'; got '{floatStr}'"));
+        }
+
+        var byeStr = GetOptionalString(node, "byePolicy", path, errors);
+        if (byeStr != null)
+        {
+            p.ByePolicy = byeStr switch
+            {
+                "lowestRank" => ByePolicy.LowestRank,
+                "highestRank" => ByePolicy.HighestRank,
+                "random" => ByePolicy.Random,
+                _ => p.ByePolicy,
+            };
+            if (byeStr is not "lowestRank" and not "highestRank" and not "random")
+                errors.Add(new FormatError(P(path, "byePolicy"), "invalid_value",
+                    $"'byePolicy' must be 'lowestRank', 'highestRank', or 'random'; got '{byeStr}'"));
+        }
+
+        var byeRes = GetOptionalString(node, "byeResult", path, errors);
+        if (byeRes != null)
+        {
+            p.ByeResult = byeRes switch
+            {
+                "win" => ByeResult.Win,
+                "draw" => ByeResult.Draw,
+                _ => p.ByeResult,
+            };
+            if (byeRes is not "win" and not "draw")
+                errors.Add(new FormatError(P(path, "byeResult"), "invalid_value",
+                    $"'byeResult' must be 'win' or 'draw'; got '{byeRes}'"));
+        }
+
+        var sys = GetOptionalString(node, "system", path, errors);
+        if (sys != null)
+        {
+            p.System = sys switch
+            {
+                "dutch" => PairingSystem.Dutch,
+                "monrad" => PairingSystem.Monrad,
+                _ => p.System,
+            };
+            if (sys is not "dutch" and not "monrad")
+                errors.Add(new FormatError(P(path, "system"), "invalid_value",
+                    $"'system' must be 'dutch' or 'monrad'; got '{sys}'"));
+        }
+
+        return p;
+    }
+
+    private static TakeSpec? MapTakeSpec(YamlMappingNode seedingNode, string sPath, List<FormatError> errors)
+    {
+        if (!seedingNode.Children.TryGetValue(new YamlScalarNode("take"), out var val))
+            return null;
+        var path = P(sPath, "take");
+
+        if (val is YamlScalarNode scalar)
+        {
+            if (scalar.Value == "qualified")
+                return new TakeSpec { Mode = TakeMode.Qualified };
+            errors.Add(new FormatError(path, "invalid_value",
+                $"'take' scalar must be 'qualified'; got '{scalar.Value}'"));
+            return null;
+        }
+
+        if (val is YamlMappingNode mapping)
+        {
+            if (!mapping.Children.TryGetValue(new YamlScalarNode("ranks"), out var ranksVal))
+            {
+                errors.Add(new FormatError(path, "invalid_value",
+                    "'take' object must contain 'ranks' array"));
+                return null;
+            }
+            if (ranksVal is not YamlSequenceNode ranksSeq)
+            {
+                errors.Add(new FormatError(P(path, "ranks"), "invalid_type", "'ranks' must be a sequence"));
+                return null;
+            }
+            var ranks = new List<int>();
+            for (var i = 0; i < ranksSeq.Children.Count; i++)
+            {
+                var rPath = $"{path}.ranks[{i}]";
+                if (ranksSeq.Children[i] is not YamlScalarNode rs || !int.TryParse(rs.Value, out var n))
+                {
+                    errors.Add(new FormatError(rPath, "invalid_type", "rank must be an integer"));
+                    continue;
+                }
+                if (n < 1)
+                    errors.Add(new FormatError(rPath, "out_of_range", $"rank must be ≥ 1, got {n}"));
+                else
+                    ranks.Add(n);
+            }
+            return new TakeSpec { Mode = TakeMode.Ranks, Ranks = ranks };
+        }
+
+        errors.Add(new FormatError(path, "invalid_type",
+            "'take' must be either scalar 'qualified' or mapping with 'ranks'"));
+        return null;
+    }
+
+    private static BracketSizing MapBracketSize(YamlMappingNode seedingNode, string sPath, List<FormatError> errors)
+    {
+        if (!seedingNode.Children.TryGetValue(new YamlScalarNode("bracketSize"), out var val))
+            return BracketSizing.Explicit;
+        var path = P(sPath, "bracketSize");
+        if (val is YamlScalarNode scalar && scalar.Value == "auto")
+            return BracketSizing.Auto;
+        errors.Add(new FormatError(path, "invalid_value",
+            $"'bracketSize' must be 'auto' when present; got '{(val as YamlScalarNode)?.Value}'"));
+        return BracketSizing.Explicit;
+    }
+
+    private static List<TieBreaker> MapTieBreakers(
+        YamlSequenceNode tbSeq, string phasePath,
+        HashSet<TieBreaker> allowedSet, List<FormatError> errors)
+    {
+        var allowedNames = string.Join(", ", allowedSet.Select(TieBreakerName));
+        var result = new List<TieBreaker>();
+        for (var i = 0; i < tbSeq.Children.Count; i++)
+        {
+            var tbPath = $"{phasePath}.tieBreakers[{i}]";
+            if (tbSeq.Children[i] is not YamlScalarNode scalar)
+            {
+                errors.Add(new FormatError(tbPath, "invalid_type", "Tie-breaker must be a string"));
+                continue;
+            }
+            var tb = ParseTieBreakerName(scalar.Value);
+            if (tb == null || !allowedSet.Contains(tb.Value))
+            {
+                errors.Add(new FormatError(tbPath, "invalid_value",
+                    $"Unknown or unsupported tie-breaker '{scalar.Value}'; supported here: {allowedNames}"));
+                continue;
+            }
+            result.Add(tb.Value);
+        }
+        return result;
+    }
+
+    private static TieBreaker? ParseTieBreakerName(string? s) => s switch
+    {
+        "scoreDifference" => TieBreaker.ScoreDifference,
+        "buchholz" => TieBreaker.Buchholz,
+        "buchholzCut1" => TieBreaker.BuchholzCut1,
+        "sonnebornBerger" => TieBreaker.SonnebornBerger,
+        "opponentWinRate" => TieBreaker.OpponentWinRate,
+        "cumulative" => TieBreaker.Cumulative,
+        "random" => TieBreaker.Random,
+        _ => null,
+    };
+
+    private static string TieBreakerName(TieBreaker tb) => tb switch
+    {
+        TieBreaker.ScoreDifference => "scoreDifference",
+        TieBreaker.Buchholz => "buchholz",
+        TieBreaker.BuchholzCut1 => "buchholzCut1",
+        TieBreaker.SonnebornBerger => "sonnebornBerger",
+        TieBreaker.OpponentWinRate => "opponentWinRate",
+        TieBreaker.Cumulative => "cumulative",
+        TieBreaker.Random => "random",
+        _ => tb.ToString(),
+    };
+
+    private static bool IsAtLeast(string formatVersion, string minVersion) =>
+        string.CompareOrdinal(formatVersion, minVersion) >= 0;
+
     // -------------------------------------------------------------------------
     // Semantic validation
     // -------------------------------------------------------------------------
 
-    private static void ValidateSemantic(TournamentFormat format, List<FormatError> errors)
+    private static void ValidateSemantic(TournamentFormat format, List<FormatError> errors, List<FormatError> warnings)
     {
         if (!SupportedVersions.Contains(format.FormatVersion))
             errors.Add(new FormatError("formatVersion", "unsupported_version",
@@ -466,6 +765,9 @@ public class TournamentFormatParser : ITournamentFormatParser
                     break;
                 case DoubleEliminationPhase dep:
                     ValidateDoubleElimination(dep, i, format.Phases.Take(i).ToList(), errors);
+                    break;
+                case SwissPhase sp:
+                    ValidateSwiss(sp, i, format.Phases.Take(i).ToList(), format.Participants?.Count, errors, warnings);
                     break;
             }
         }
@@ -591,6 +893,14 @@ public class TournamentFormatParser : ITournamentFormatParser
         SingleEliminationPhase phase, int idx, List<PhaseSpec> priorPhases, List<FormatError> errors)
     {
         var path = $"phases[{idx}]";
+
+        if (phase.Seeding.Take != null)
+            errors.Add(new FormatError(P(path, "seeding.take"), "take_not_allowed",
+                "'take' is only allowed in 'swiss' phases; use explicit 'slots' here"));
+        if (phase.Seeding.BracketSize == BracketSizing.Auto)
+            errors.Add(new FormatError(P(path, "seeding.bracketSize"), "auto_not_allowed",
+                "'bracketSize: auto' is only allowed in 'swiss' phases"));
+
         var slotCount = phase.Seeding.Slots.Count;
 
         if (slotCount < 2 || !IsPowerOfTwo(slotCount))
@@ -882,6 +1192,217 @@ public class TournamentFormatParser : ITournamentFormatParser
                 errors.Add(new FormatError(P(slotPath, "rank"), "rank_out_of_range",
                     $"rank={slot.Rank} is out of range [1..{sourceRR.Groups.Size}] for phase '{sourceRR.Id}' (groups.size={sourceRR.Groups.Size})"));
 
+            if (!usedPairs.Add((slot.Source, slot.Rank)))
+                errors.Add(new FormatError(slotPath, "duplicate_slot",
+                    $"Slot ({slot.Source}, rank={slot.Rank}) appears more than once"));
+        }
+    }
+
+    private static void ValidateSwiss(
+        SwissPhase phase, int idx, List<PhaseSpec> priorPhases, int? participantsCount,
+        List<FormatError> errors, List<FormatError> warnings)
+    {
+        var path = $"phases[{idx}]";
+
+        // ---- Tie-breakers ----
+        var tbPath = P(path, "tieBreakers");
+        if (phase.TieBreakers.Count == 0)
+        {
+            errors.Add(new FormatError(tbPath, "empty", "'tieBreakers' must have at least one element"));
+        }
+        else
+        {
+            var seenTb = new HashSet<TieBreaker>();
+            for (var i = 0; i < phase.TieBreakers.Count; i++)
+            {
+                if (!seenTb.Add(phase.TieBreakers[i]))
+                    errors.Add(new FormatError($"{tbPath}[{i}]", "duplicate_tie_breaker",
+                        $"Tie-breaker '{TieBreakerName(phase.TieBreakers[i])}' is used more than once"));
+            }
+            if (phase.TieBreakers[^1] != TieBreaker.Random)
+                warnings.Add(new FormatError(tbPath, "last_tie_breaker_should_be_random",
+                    "Last tie-breaker should be 'random' to guarantee termination"));
+        }
+
+        // ---- Termination mode: exactly one of rounds / qualification ----
+        var hasRounds = phase.Rounds.HasValue;
+        var hasQual = phase.Qualification != null;
+        if (!hasRounds && !hasQual)
+            errors.Add(new FormatError(path, "swiss_termination_required",
+                "swiss phase must specify exactly one of 'rounds' or 'qualification'"));
+        else if (hasRounds && hasQual)
+            errors.Add(new FormatError(path, "swiss_termination_required",
+                "swiss phase cannot specify both 'rounds' and 'qualification'"));
+
+        // ---- Seeding & expected pool size ----
+        int? expectedPoolSize = null;
+        PhaseSpec? sourcePhase = null;
+
+        if (phase.Seeding == null)
+        {
+            if (idx != 0)
+                errors.Add(new FormatError(path, "swiss_seeding_required",
+                    "swiss phase that is not first must specify 'seeding' (source phase + slots/take)"));
+            else if (participantsCount.HasValue)
+                expectedPoolSize = participantsCount.Value;
+        }
+        else
+        {
+            var sPath = P(path, "seeding");
+            sourcePhase = priorPhases.FirstOrDefault(p => p.Id == phase.Seeding.From);
+            if (sourcePhase == null)
+            {
+                errors.Add(new FormatError(P(sPath, "from"), "unknown_phase",
+                    $"Phase '{phase.Seeding.From}' not found among phases declared before this one"));
+            }
+            else
+            {
+                var hasSlots = phase.Seeding.Slots.Count > 0;
+                var hasTake = phase.Seeding.Take != null;
+
+                if (hasSlots && hasTake)
+                    errors.Add(new FormatError(sPath, "seeding_take_slots_conflict",
+                        "'seeding.take' and 'seeding.slots' are mutually exclusive"));
+                else if (!hasSlots && !hasTake)
+                    errors.Add(new FormatError(sPath, "seeding_source_required",
+                        "swiss seeding requires either 'slots' or 'take'"));
+
+                if (hasTake)
+                {
+                    var take = phase.Seeding.Take!;
+                    if (take.Mode == TakeMode.Qualified)
+                    {
+                        if (sourcePhase is not SwissPhase swissSrc || swissSrc.Qualification == null)
+                            errors.Add(new FormatError(P(sPath, "take"), "take_requires_qualification",
+                                "'take: qualified' requires source phase to be 'swiss' in qualification mode"));
+                        if (phase.Seeding.BracketSize != BracketSizing.Auto)
+                            errors.Add(new FormatError(P(sPath, "bracketSize"), "auto_required",
+                                "'take: qualified' requires 'bracketSize: auto' (number of qualified is not fixed)"));
+                    }
+                    else if (take.Mode == TakeMode.Ranks && take.Ranks != null)
+                    {
+                        if (sourcePhase is RoundRobinPhase rrSrc)
+                        {
+                            for (var i = 0; i < take.Ranks.Count; i++)
+                            {
+                                if (take.Ranks[i] < 1 || take.Ranks[i] > rrSrc.Groups.Size)
+                                    errors.Add(new FormatError(
+                                        $"{sPath}.take.ranks[{i}]", "rank_out_of_range",
+                                        $"rank={take.Ranks[i]} is out of range [1..{rrSrc.Groups.Size}] for phase '{rrSrc.Id}'"));
+                            }
+                            expectedPoolSize = rrSrc.Groups.Count * take.Ranks.Count;
+                        }
+                        else if (sourcePhase is SwissPhase swissSrcRanks && swissSrcRanks.Qualification == null
+                                 && swissSrcRanks.Groups != null)
+                        {
+                            for (var i = 0; i < take.Ranks.Count; i++)
+                            {
+                                if (take.Ranks[i] < 1 || take.Ranks[i] > swissSrcRanks.Groups.Size)
+                                    errors.Add(new FormatError(
+                                        $"{sPath}.take.ranks[{i}]", "rank_out_of_range",
+                                        $"rank={take.Ranks[i]} is out of range [1..{swissSrcRanks.Groups.Size}] for phase '{swissSrcRanks.Id}'"));
+                            }
+                            expectedPoolSize = swissSrcRanks.Groups.Count * take.Ranks.Count;
+                        }
+                        else
+                        {
+                            errors.Add(new FormatError(P(sPath, "take"), "ranks_unsupported_source",
+                                $"'take: ranks' requires source phase to have determinate ranks (roundRobin or swiss with fixed rounds and groups); source '{phase.Seeding.From}' does not"));
+                        }
+                    }
+                }
+                else if (hasSlots)
+                {
+                    expectedPoolSize = phase.Seeding.Slots.Count;
+                    if (sourcePhase is RoundRobinPhase rrSlotSrc)
+                        ValidateSwissSlotsAgainstRoundRobin(phase.Seeding, P(sPath, "slots"), rrSlotSrc, errors);
+                    else
+                        errors.Add(new FormatError(P(sPath, "from"), "invalid_source_type",
+                            $"swiss 'seeding.slots' requires source phase '{phase.Seeding.From}' to be of type roundRobin"));
+                }
+            }
+        }
+
+        // ---- Pool / groups size check ----
+        if (phase.Groups != null)
+        {
+            if (expectedPoolSize.HasValue)
+            {
+                var capacity = phase.Groups.Count * phase.Groups.Size;
+                if (capacity != expectedPoolSize.Value)
+                    errors.Add(new FormatError(P(path, "groups"), "pool_size_mismatch",
+                        $"groups.count × groups.size = {phase.Groups.Count} × {phase.Groups.Size} = {capacity}, but pool source provides {expectedPoolSize.Value}"));
+            }
+        }
+
+        // ---- rounds vs pool capacity (warning) ----
+        if (hasRounds)
+        {
+            int? poolSize = phase.Groups?.Size ?? expectedPoolSize;
+            if (poolSize.HasValue)
+            {
+                var maxRoundsByCapacity = poolSize.Value - 1;
+                if (phase.Rounds!.Value > maxRoundsByCapacity)
+                    warnings.Add(new FormatError(P(path, "rounds"), "swiss_rounds_exceed_capacity",
+                        $"rounds={phase.Rounds} exceeds pool capacity (size − 1 = {maxRoundsByCapacity}); pair repeats unavoidable"));
+            }
+        }
+
+        // ---- Overrides reference valid round ids (round1..roundN) ----
+        int? effectiveRoundCount = phase.Rounds
+            ?? phase.Qualification?.MaxRounds
+            ?? (phase.Qualification != null
+                ? phase.Qualification.WinsToQualify + phase.Qualification.LossesToEliminate - 1
+                : (int?)null);
+
+        if (effectiveRoundCount.HasValue && phase.Overrides.Count > 0)
+        {
+            var validRoundIds = Enumerable.Range(1, effectiveRoundCount.Value)
+                .Select(n => $"round{n}")
+                .ToHashSet(StringComparer.Ordinal);
+
+            for (var i = 0; i < phase.Overrides.Count; i++)
+            {
+                if (!validRoundIds.Contains(phase.Overrides[i].RoundId))
+                    errors.Add(new FormatError($"{path}.overrides[{i}].roundId", "unknown_round_id",
+                        $"Override references unknown round id '{phase.Overrides[i].RoundId}' (expected one of round1..round{effectiveRoundCount})"));
+            }
+        }
+
+        // NOTE: swiss_byes_required (warning when qualification tree forces byes) is deferred —
+        // see spec §15.4 "Проверка чистоты отсечки". Implementing it requires simulating the
+        // bucket tree for (size, winsToQualify, lossesToEliminate); not yet implemented.
+    }
+
+    private static void ValidateSwissSlotsAgainstRoundRobin(
+        SeedingSpec seeding, string slotsPath, RoundRobinPhase sourceRR, List<FormatError> errors)
+    {
+        var validGroupCodes = Enumerable.Range(0, sourceRR.Groups.Count)
+            .Select(i => ((char)('A' + i)).ToString())
+            .ToHashSet(StringComparer.Ordinal);
+
+        var usedPairs = new HashSet<(string source, int rank)>();
+        for (var i = 0; i < seeding.Slots.Count; i++)
+        {
+            var slot = seeding.Slots[i];
+            var slotPath = $"{slotsPath}[{i}]";
+
+            var parts = slot.Source.Split('.', 2);
+            if (parts.Length != 2)
+            {
+                errors.Add(new FormatError(P(slotPath, "source"), "invalid_source_format",
+                    $"Source '{slot.Source}' must have format '<phaseId>.<groupCode>'"));
+                continue;
+            }
+            if (parts[0] != seeding.From)
+                errors.Add(new FormatError(P(slotPath, "source"), "source_phase_mismatch",
+                    $"Source phase '{parts[0]}' must match seeding.from = '{seeding.From}'"));
+            if (!validGroupCodes.Contains(parts[1]))
+                errors.Add(new FormatError(P(slotPath, "source"), "invalid_group_code",
+                    $"Group '{parts[1]}' does not exist in phase '{sourceRR.Id}' (valid: {string.Join(", ", validGroupCodes)})"));
+            if (slot.Rank < 1 || slot.Rank > sourceRR.Groups.Size)
+                errors.Add(new FormatError(P(slotPath, "rank"), "rank_out_of_range",
+                    $"rank={slot.Rank} is out of range [1..{sourceRR.Groups.Size}] for phase '{sourceRR.Id}'"));
             if (!usedPairs.Add((slot.Source, slot.Rank)))
                 errors.Add(new FormatError(slotPath, "duplicate_slot",
                     $"Slot ({slot.Source}, rank={slot.Rank}) appears more than once"));

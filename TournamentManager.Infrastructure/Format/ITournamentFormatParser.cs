@@ -10,6 +10,7 @@ public interface ITournamentFormatParser
 public record FormatParseResult(
     bool IsValid,
     TournamentFormat? Format,
-    IReadOnlyList<FormatError> Errors);
+    IReadOnlyList<FormatError> Errors,
+    IReadOnlyList<FormatError> Warnings);
 
 public record FormatError(string Path, string Code, string Message);

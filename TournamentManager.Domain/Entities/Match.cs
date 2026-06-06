@@ -7,7 +7,7 @@ public class Match
     public Guid Id { get; set; }
     public Guid TournamentId { get; set; }
     public Guid Fighter1Id { get; set; }
-    public Guid Fighter2Id { get; set; }
+    public Guid? Fighter2Id { get; set; }
     public DateTime? ScheduledAt { get; set; }
     public MatchStatus Status { get; set; }
 
@@ -29,6 +29,6 @@ public class Match
 
     public Tournament Tournament { get; set; } = null!;
     public Fighter Fighter1 { get; set; } = null!;
-    public Fighter Fighter2 { get; set; } = null!;
+    public Fighter? Fighter2 { get; set; }
     public List<Exchange> Exchanges { get; set; } = new();
 }
