@@ -3,7 +3,7 @@ namespace TournamentManager.Api.Dto.Matches;
 public record MatchResponse(
     Guid Id,
     Guid TournamentId,
-    Guid Fighter1Id,
+    Guid? Fighter1Id,
     Guid? Fighter2Id,
     DateTime? ScheduledAt,
     string Status,
@@ -19,6 +19,9 @@ public record MatchResponse(
     int? EffectiveRoundDurationSeconds,
     int? EffectiveMaxDoubles,
     int? EffectiveMaxWarnings,
+    Guid? EncounterId,
+    int? BoutNumber,
+    int? TargetCumulativeScore,
     DateTime? StartedAt,
     int CurrentRoundNumber,
     DateTime? CurrentRoundStartedAt,

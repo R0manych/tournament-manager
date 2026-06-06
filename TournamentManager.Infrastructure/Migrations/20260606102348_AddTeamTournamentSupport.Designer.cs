@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using TournamentManager.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using TournamentManager.Infrastructure.Persistence;
 namespace TournamentManager.Infrastructure.Migrations
 {
     [DbContext(typeof(TournamentDbContext))]
-    partial class TournamentDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260606102348_AddTeamTournamentSupport")]
+    partial class AddTeamTournamentSupport
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -206,7 +209,7 @@ namespace TournamentManager.Infrastructure.Migrations
                     b.Property<DateTime?>("EndedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<Guid?>("Fighter1Id")
+                    b.Property<Guid>("Fighter1Id")
                         .HasColumnType("uuid");
 
                     b.Property<Guid?>("Fighter2Id")
@@ -240,12 +243,6 @@ namespace TournamentManager.Infrastructure.Migrations
                     b.Property<int?>("TargetCumulativeScore")
                         .HasColumnType("integer");
 
-                    b.Property<Guid?>("Team1Id")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("Team2Id")
-                        .HasColumnType("uuid");
-
                     b.Property<Guid>("TournamentId")
                         .HasColumnType("uuid");
 
@@ -264,10 +261,6 @@ namespace TournamentManager.Infrastructure.Migrations
 
                     b.HasIndex("Fighter2Id");
 
-                    b.HasIndex("Team1Id");
-
-                    b.HasIndex("Team2Id");
-
                     b.HasIndex("EncounterId", "BoutNumber")
                         .IsUnique()
                         .HasFilter("\"EncounterId\" IS NOT NULL");
@@ -277,10 +270,6 @@ namespace TournamentManager.Infrastructure.Migrations
                     b.ToTable("Matches", t =>
                         {
                             t.HasCheckConstraint("CK_Match_Fighter1NotEqualFighter2", "\"Fighter2Id\" IS NULL OR \"Fighter1Id\" <> \"Fighter2Id\"");
-
-                            t.HasCheckConstraint("CK_Match_FighterXorTeam", "(\"Fighter1Id\" IS NOT NULL AND \"Team1Id\" IS NULL AND \"Team2Id\" IS NULL) OR (\"Team1Id\" IS NOT NULL AND \"Fighter1Id\" IS NULL AND \"Fighter2Id\" IS NULL)");
-
-                            t.HasCheckConstraint("CK_Match_Team1NotEqualTeam2", "\"Team2Id\" IS NULL OR \"Team1Id\" <> \"Team2Id\"");
                         });
                 });
 
@@ -415,7 +404,7 @@ namespace TournamentManager.Infrastructure.Migrations
                     b.Property<Guid>("TournamentId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("ParticipantId")
+                    b.Property<Guid>("FighterId")
                         .HasColumnType("uuid");
 
                     b.Property<DateTime>("RegisteredAt")
@@ -424,7 +413,9 @@ namespace TournamentManager.Infrastructure.Migrations
                     b.Property<int?>("Seed")
                         .HasColumnType("integer");
 
-                    b.HasKey("TournamentId", "ParticipantId");
+                    b.HasKey("TournamentId", "FighterId");
+
+                    b.HasIndex("FighterId");
 
                     b.ToTable("TournamentParticipants");
                 });
@@ -488,21 +479,12 @@ namespace TournamentManager.Infrastructure.Migrations
                     b.HasOne("TournamentManager.Domain.Entities.Fighter", "Fighter1")
                         .WithMany()
                         .HasForeignKey("Fighter1Id")
-                        .OnDelete(DeleteBehavior.Restrict);
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
 
                     b.HasOne("TournamentManager.Domain.Entities.Fighter", "Fighter2")
                         .WithMany()
                         .HasForeignKey("Fighter2Id")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("TournamentManager.Domain.Entities.Team", "Team1")
-                        .WithMany()
-                        .HasForeignKey("Team1Id")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("TournamentManager.Domain.Entities.Team", "Team2")
-                        .WithMany()
-                        .HasForeignKey("Team2Id")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("TournamentManager.Domain.Entities.Tournament", "Tournament")
@@ -516,10 +498,6 @@ namespace TournamentManager.Infrastructure.Migrations
                     b.Navigation("Fighter1");
 
                     b.Navigation("Fighter2");
-
-                    b.Navigation("Team1");
-
-                    b.Navigation("Team2");
 
                     b.Navigation("Tournament");
                 });
@@ -556,11 +534,19 @@ namespace TournamentManager.Infrastructure.Migrations
 
             modelBuilder.Entity("TournamentManager.Domain.Entities.TournamentParticipant", b =>
                 {
+                    b.HasOne("TournamentManager.Domain.Entities.Fighter", "Fighter")
+                        .WithMany()
+                        .HasForeignKey("FighterId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("TournamentManager.Domain.Entities.Tournament", "Tournament")
                         .WithMany("Participants")
                         .HasForeignKey("TournamentId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Fighter");
 
                     b.Navigation("Tournament");
                 });

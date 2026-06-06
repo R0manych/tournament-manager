@@ -9,6 +9,9 @@ public record CreateTournamentRequest(
     [MaxLength(200)] string? Location,
     DateOnly StartDate,
     DateOnly EndDate,
+    string? ParticipantKind,
     [Range(1, int.MaxValue)] int? DefaultRoundDurationSeconds,
     [Range(0, int.MaxValue)] int? DefaultMaxDoubles,
-    [Range(0, int.MaxValue)] int? DefaultMaxWarnings);
+    [Range(0, int.MaxValue)] int? DefaultMaxWarnings,
+    [Range(1, int.MaxValue)] int? DefaultTeamTargetScore,
+    [Range(1, int.MaxValue)] int? DefaultTeamBoutDurationSeconds);

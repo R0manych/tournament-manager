@@ -7,9 +7,25 @@ public class TournamentFormat
     public string FormatVersion { get; set; } = null!;
     public string Name { get; set; } = null!;
     public string? Description { get; set; }
+    public ParticipantsKindSpec ParticipantsKind { get; set; } = ParticipantsKindSpec.Fighter;
     public MatchDefaults Defaults { get; set; } = new();
+    public TeamSpec? Team { get; set; }
     public ParticipantsSpec Participants { get; set; } = null!;
     public List<PhaseSpec> Phases { get; set; } = new();
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ParticipantsKindSpec
+{
+    [JsonStringEnumMemberName("fighter")] Fighter,
+    [JsonStringEnumMemberName("team")] Team,
+}
+
+public class TeamSpec
+{
+    public int Size { get; set; }
+    public int? TargetTotalScore { get; set; }
+    public int? BoutDurationSeconds { get; set; }
 }
 
 public class MatchDefaults

@@ -22,6 +22,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var matches = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
+            .Include(m => m.Encounter)
             .AsNoTracking()
             .Where(m => m.TournamentId == tournamentId)
             .OrderBy(m => m.CreatedAt)
@@ -36,6 +37,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
+            .Include(m => m.Encounter)
             .AsNoTracking()
             .FirstOrDefaultAsync(m => m.Id == id, ct);
 
@@ -49,30 +51,33 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         if (tournament is null) return NotFound();
 
         if (req.Fighter2Id.HasValue && req.Fighter1Id == req.Fighter2Id.Value)
-            return Problem("Fighter1 and Fighter2 must be different.", statusCode: 400);
+            return Problem("Participant1 and Participant2 must be different.", statusCode: 400);
 
-        var f1InTournament = await db.TournamentParticipants
-            .AnyAsync(p => p.TournamentId == tournamentId && p.FighterId == req.Fighter1Id, ct);
-        if (!f1InTournament)
-            return Problem($"Fighter {req.Fighter1Id} is not registered in this tournament.", statusCode: 400);
+        var p1InTournament = await db.TournamentParticipants
+            .AnyAsync(p => p.TournamentId == tournamentId && p.ParticipantId == req.Fighter1Id, ct);
+        if (!p1InTournament)
+            return Problem($"Participant {req.Fighter1Id} is not registered in this tournament.", statusCode: 400);
 
         if (req.Fighter2Id.HasValue)
         {
-            var f2InTournament = await db.TournamentParticipants
-                .AnyAsync(p => p.TournamentId == tournamentId && p.FighterId == req.Fighter2Id.Value, ct);
-            if (!f2InTournament)
-                return Problem($"Fighter {req.Fighter2Id} is not registered in this tournament.", statusCode: 400);
+            var p2InTournament = await db.TournamentParticipants
+                .AnyAsync(p => p.TournamentId == tournamentId && p.ParticipantId == req.Fighter2Id.Value, ct);
+            if (!p2InTournament)
+                return Problem($"Participant {req.Fighter2Id} is not registered in this tournament.", statusCode: 400);
         }
 
         var now = DateTime.UtcNow;
         var isBye = !req.Fighter2Id.HasValue;
+        var isTeam = tournament.ParticipantKind == ParticipantKind.Team;
 
         var match = new Match
         {
             Id = Guid.NewGuid(),
             TournamentId = tournamentId,
-            Fighter1Id = req.Fighter1Id,
-            Fighter2Id = req.Fighter2Id,
+            Fighter1Id = isTeam ? null : req.Fighter1Id,
+            Fighter2Id = isTeam ? null : req.Fighter2Id,
+            Team1Id = isTeam ? req.Fighter1Id : null,
+            Team2Id = isTeam ? req.Fighter2Id : null,
             ScheduledAt = req.ScheduledAt,
             Status = isBye ? MatchStatus.WalkoverWin : MatchStatus.Scheduled,
             WinnerId = isBye ? req.Fighter1Id : null,
@@ -118,6 +123,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
+            .Include(m => m.Encounter)
             .FirstOrDefaultAsync(m => m.Id == id, ct);
         if (match is null) return NotFound();
 
@@ -159,6 +165,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
+            .Include(m => m.Encounter)
             .FirstOrDefaultAsync(m => m.Id == id, ct);
         if (match is null) return NotFound();
 
@@ -181,6 +188,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
+            .Include(m => m.Encounter)
             .FirstOrDefaultAsync(m => m.Id == id, ct);
         if (match is null) return NotFound();
 
@@ -199,6 +207,11 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
     {
         var match = await db.Matches.FindAsync([id], ct);
         if (match is null) return NotFound();
+
+        if (match.EncounterId is not null)
+            return Problem(
+                "Bouts cannot be deleted individually; delete the parent encounter.",
+                statusCode: 409);
 
         db.Matches.Remove(match);
         await db.SaveChangesAsync(ct);
@@ -227,28 +240,33 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         if (phase is null)
             return Problem($"Round-robin phase '{req.PhaseId}' not found in format.", statusCode: 400);
 
-        // Validate all fighters belong to the tournament
-        var registeredIds = tournament.Participants.Select(p => p.FighterId).ToHashSet();
+        // Validate all participants belong to the tournament
+        var registeredIds = tournament.Participants.Select(p => p.ParticipantId).ToHashSet();
         var allIds = req.Groups.SelectMany(g => g).ToList();
         var unknown = allIds.Where(id => !registeredIds.Contains(id)).ToList();
         if (unknown.Count > 0)
             return Problem(
-                $"Fighters not registered in this tournament: {string.Join(", ", unknown)}.",
+                $"Participants not registered in this tournament: {string.Join(", ", unknown)}.",
                 statusCode: 400);
 
         // Dedup within request itself
         if (allIds.Distinct().Count() != allIds.Count)
-            return Problem("Fighter appears in more than one group or twice in the same group.", statusCode: 400);
+            return Problem("Participant appears in more than one group or twice in the same group.", statusCode: 400);
+
+        var isTeam = tournament.ParticipantKind == ParticipantKind.Team;
 
         // Existing pairs for idempotency (normalised: smaller GUID first).
-        // Walkovers (Fighter2Id == null) are tracked separately by Fighter1Id.
+        // Walkovers (single participant) are tracked separately.
+        static Guid? P1(Match m) => m.Team1Id ?? m.Fighter1Id;
+        static Guid? P2(Match m) => m.Team2Id ?? m.Fighter2Id;
+
         var existingPairs = tournament.Matches
-            .Where(m => m.Fighter2Id.HasValue)
-            .Select(m => NormPair(m.Fighter1Id, m.Fighter2Id!.Value))
+            .Where(m => P1(m).HasValue && P2(m).HasValue)
+            .Select(m => NormPair(P1(m)!.Value, P2(m)!.Value))
             .ToHashSet();
         var existingWalkovers = tournament.Matches
-            .Where(m => !m.Fighter2Id.HasValue)
-            .Select(m => m.Fighter1Id)
+            .Where(m => P1(m).HasValue && !P2(m).HasValue)
+            .Select(m => P1(m)!.Value)
             .ToHashSet();
 
         var created = new List<Match>();
@@ -258,7 +276,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         foreach (var group in req.Groups)
         {
-            // Singleton group → walkover for the sole fighter.
+            // Singleton group → walkover for the sole participant.
             if (group.Count == 1)
             {
                 if (!existingWalkovers.Add(group[0]))
@@ -271,8 +289,8 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
                 {
                     Id = Guid.NewGuid(),
                     TournamentId = tournamentId,
-                    Fighter1Id = group[0],
-                    Fighter2Id = null,
+                    Fighter1Id = isTeam ? null : group[0],
+                    Team1Id = isTeam ? group[0] : null,
                     Status = MatchStatus.WalkoverWin,
                     WinnerId = group[0],
                     StartedAt = now,
@@ -300,8 +318,10 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
                     {
                         Id = Guid.NewGuid(),
                         TournamentId = tournamentId,
-                        Fighter1Id = group[i],
-                        Fighter2Id = group[j],
+                        Fighter1Id = isTeam ? null : group[i],
+                        Fighter2Id = isTeam ? null : group[j],
+                        Team1Id = isTeam ? group[i] : null,
+                        Team2Id = isTeam ? group[j] : null,
                         Status = MatchStatus.Scheduled,
                         RoundDurationSeconds = def?.RoundDurationSeconds,
                         MaxDoubles = def?.MaxDoubles,
@@ -335,8 +355,8 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
     private static Guid? CalcWinner(Match m)
     {
-        if (m.Score1 > m.Score2) return m.Fighter1Id;
-        if (m.Score2 > m.Score1) return m.Fighter2Id;
+        if (m.Score1 > m.Score2) return m.Team1Id ?? m.Fighter1Id;
+        if (m.Score2 > m.Score1) return m.Team2Id ?? m.Fighter2Id;
         return null;
     }
 }

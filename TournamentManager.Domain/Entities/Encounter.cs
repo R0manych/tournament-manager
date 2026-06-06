@@ -1,0 +1,29 @@
+using TournamentManager.Domain.Enums;
+
+namespace TournamentManager.Domain.Entities;
+
+public class Encounter
+{
+    public Guid Id { get; set; }
+    public Guid TournamentId { get; set; }
+    public Guid Participant1Id { get; set; }
+    public Guid Participant2Id { get; set; }
+
+    public DateTime? ScheduledAt { get; set; }
+    public MatchStatus Status { get; set; }
+
+    public int TargetTotalScore { get; set; }
+    public int BoutDurationSeconds { get; set; }
+
+    public Guid? WinnerParticipantId { get; set; }
+    public Guid? PriorityParticipantId { get; set; }
+
+    public DateTime? StartedAt { get; set; }
+    public DateTime? EndedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+
+    public Tournament Tournament { get; set; } = null!;
+    public Team Participant1 { get; set; } = null!;
+    public Team Participant2 { get; set; } = null!;
+    public List<Match> Bouts { get; set; } = new();
+}

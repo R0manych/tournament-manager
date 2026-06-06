@@ -19,6 +19,9 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
     public DbSet<TournamentParticipant> TournamentParticipants => Set<TournamentParticipant>();
     public DbSet<Match> Matches => Set<Match>();
     public DbSet<Exchange> Exchanges => Set<Exchange>();
+    public DbSet<Team> Teams => Set<Team>();
+    public DbSet<TeamMember> TeamMembers => Set<TeamMember>();
+    public DbSet<Encounter> Encounters => Set<Encounter>();
     //public DbSet<Document> Documents => Set<Document>();
 
     protected override void OnModelCreating(ModelBuilder m)
@@ -32,6 +35,10 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
             b.Property(t => t.Nomination).HasMaxLength(100);
             b.Property(t => t.Location).HasMaxLength(200);
             b.Property(t => t.Status).HasConversion<string>();
+            b.Property(t => t.ParticipantKind)
+                .HasConversion<string>()
+                .HasMaxLength(20)
+                .HasDefaultValue(Domain.Enums.ParticipantKind.Fighter);
             b.Property(t => t.CreatedAt).HasColumnType("timestamp with time zone");
 
             b.Property(t => t.Format)
@@ -52,6 +59,16 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
                 .HasForeignKey(x => x.TournamentId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            b.HasMany(t => t.Teams)
+                .WithOne(x => x.Tournament)
+                .HasForeignKey(x => x.TournamentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            b.HasMany(t => t.Encounters)
+                .WithOne(x => x.Tournament)
+                .HasForeignKey(x => x.TournamentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
             //b.HasMany(t => t.Documents)
             //    .WithOne(d => d.Tournament)
             //    .HasForeignKey(d => d.TournamentId)
@@ -68,17 +85,13 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
             b.Property(f => f.CreatedAt).HasColumnType("timestamp with time zone");
         });
 
-        // TournamentParticipant
+        // TournamentParticipant — polymorphic; ParticipantId references Fighter or Team
+        // depending on Tournament.ParticipantKind. No FK enforced at DB level.
         m.Entity<TournamentParticipant>(b =>
         {
-            b.HasKey(p => new { p.TournamentId, p.FighterId });
+            b.HasKey(p => new { p.TournamentId, p.ParticipantId });
             b.Property(p => p.Seed);
             b.Property(p => p.RegisteredAt).HasColumnType("timestamp with time zone");
-
-            b.HasOne(p => p.Fighter)
-                .WithMany()
-                .HasForeignKey(p => p.FighterId)
-                .OnDelete(DeleteBehavior.Restrict);
         });
 
         // Match
@@ -95,6 +108,7 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
             b.HasOne(x => x.Fighter1)
                 .WithMany()
                 .HasForeignKey(x => x.Fighter1Id)
+                .IsRequired(false)
                 .OnDelete(DeleteBehavior.Restrict);
 
             b.HasOne(x => x.Fighter2)
@@ -103,18 +117,49 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
                 .IsRequired(false)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            b.HasOne(x => x.Team1)
+                .WithMany()
+                .HasForeignKey(x => x.Team1Id)
+                .IsRequired(false)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            b.HasOne(x => x.Team2)
+                .WithMany()
+                .HasForeignKey(x => x.Team2Id)
+                .IsRequired(false)
+                .OnDelete(DeleteBehavior.Restrict);
+
             b.HasMany(x => x.Exchanges)
                 .WithOne(e => e.Match)
                 .HasForeignKey(e => e.MatchId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            b.HasOne(x => x.Encounter)
+                .WithMany(e => e.Bouts)
+                .HasForeignKey(x => x.EncounterId)
+                .IsRequired(false)
+                .OnDelete(DeleteBehavior.Cascade);
+
             b.HasIndex(x => new { x.TournamentId, x.Status });
             b.HasIndex(x => x.Fighter1Id);
             b.HasIndex(x => x.Fighter2Id);
+            b.HasIndex(x => new { x.EncounterId, x.BoutNumber })
+                .IsUnique()
+                .HasFilter("\"EncounterId\" IS NOT NULL");
 
-            b.ToTable(t => t.HasCheckConstraint(
-                "CK_Match_Fighter1NotEqualFighter2",
-                "\"Fighter2Id\" IS NULL OR \"Fighter1Id\" <> \"Fighter2Id\""));
+            b.ToTable(t =>
+            {
+                t.HasCheckConstraint(
+                    "CK_Match_Fighter1NotEqualFighter2",
+                    "\"Fighter2Id\" IS NULL OR \"Fighter1Id\" <> \"Fighter2Id\"");
+                t.HasCheckConstraint(
+                    "CK_Match_Team1NotEqualTeam2",
+                    "\"Team2Id\" IS NULL OR \"Team1Id\" <> \"Team2Id\"");
+                t.HasCheckConstraint(
+                    "CK_Match_FighterXorTeam",
+                    "(\"Fighter1Id\" IS NOT NULL AND \"Team1Id\" IS NULL AND \"Team2Id\" IS NULL)" +
+                    " OR (\"Team1Id\" IS NOT NULL AND \"Fighter1Id\" IS NULL AND \"Fighter2Id\" IS NULL)");
+            });
         });
 
         // Exchange
@@ -126,6 +171,64 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
 
             b.HasIndex(e => new { e.MatchId, e.Sequence }).IsUnique();
             b.HasIndex(e => new { e.MatchId, e.RoundNumber });
+        });
+
+        // Team
+        m.Entity<Team>(b =>
+        {
+            b.HasKey(t => t.Id);
+            b.Property(t => t.Name).IsRequired().HasMaxLength(200);
+            b.Property(t => t.Club).HasMaxLength(200);
+            b.Property(t => t.City).HasMaxLength(100);
+            b.Property(t => t.CreatedAt).HasColumnType("timestamp with time zone");
+
+            b.HasIndex(t => new { t.TournamentId, t.Name }).IsUnique();
+        });
+
+        // TeamMember
+        m.Entity<TeamMember>(b =>
+        {
+            b.HasKey(tm => new { tm.TeamId, tm.FighterId });
+            b.Property(tm => tm.AddedAt).HasColumnType("timestamp with time zone");
+
+            b.HasOne(tm => tm.Team)
+                .WithMany(t => t.Members)
+                .HasForeignKey(tm => tm.TeamId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            b.HasOne(tm => tm.Fighter)
+                .WithMany()
+                .HasForeignKey(tm => tm.FighterId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            b.HasIndex(tm => new { tm.TeamId, tm.Position }).IsUnique();
+        });
+
+        // Encounter
+        m.Entity<Encounter>(b =>
+        {
+            b.HasKey(e => e.Id);
+            b.Property(e => e.Status).HasConversion<string>();
+            b.Property(e => e.ScheduledAt).HasColumnType("timestamp with time zone");
+            b.Property(e => e.StartedAt).HasColumnType("timestamp with time zone");
+            b.Property(e => e.EndedAt).HasColumnType("timestamp with time zone");
+            b.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+
+            b.HasOne(e => e.Participant1)
+                .WithMany()
+                .HasForeignKey(e => e.Participant1Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            b.HasOne(e => e.Participant2)
+                .WithMany()
+                .HasForeignKey(e => e.Participant2Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            b.HasIndex(e => new { e.TournamentId, e.Status });
+
+            b.ToTable(t => t.HasCheckConstraint(
+                "CK_Encounter_Participant1NotEqualParticipant2",
+                "\"Participant1Id\" <> \"Participant2Id\""));
         });
 
         // Document
