@@ -90,6 +90,11 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         };
 
         db.Matches.Add(match);
+
+        // First generated fight locks the setup stage (groups become read-only).
+        if (tournament.Status == TournamentStatus.Draft)
+            tournament.Status = TournamentStatus.Scheduled;
+
         await db.SaveChangesAsync(ct);
 
         match.Tournament = tournament;
@@ -138,6 +143,9 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
                 match.StartedAt = now;
                 match.CurrentRoundNumber = 1;
                 match.CurrentRoundStartedAt = now;
+                // First started fight moves the tournament to Active.
+                if (match.Tournament.Status == TournamentStatus.Scheduled)
+                    match.Tournament.Status = TournamentStatus.Active;
                 break;
             case MatchStatus.InProgress when match.Status == MatchStatus.Completed:
                 match.EndedAt = null;
@@ -231,6 +239,9 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         if (tournament is null) return NotFound();
 
+        if (tournament.Status is TournamentStatus.Completed or TournamentStatus.Cancelled)
+            return Problem($"Cannot generate matches for a {tournament.Status} tournament.", statusCode: 409);
+
         if (tournament.Format is null)
             return Problem("Tournament has no format uploaded.", statusCode: 400);
 
@@ -240,9 +251,26 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         if (phase is null)
             return Problem($"Round-robin phase '{req.PhaseId}' not found in format.", statusCode: 400);
 
+        // Groups omitted → use the saved composition of this phase.
+        var groups = req.Groups;
+        if (groups is null || groups.Count == 0)
+        {
+            groups = await db.TournamentGroups
+                .AsNoTracking()
+                .Where(g => g.TournamentId == tournamentId && g.PhaseId == req.PhaseId)
+                .OrderBy(g => g.OrderIndex)
+                .Select(g => g.ParticipantIds)
+                .ToListAsync(ct);
+
+            if (groups.Count == 0)
+                return Problem(
+                    $"No saved groups for phase '{req.PhaseId}'. Save groups first or pass them in the request.",
+                    statusCode: 400);
+        }
+
         // Validate all participants belong to the tournament
         var registeredIds = tournament.Participants.Select(p => p.ParticipantId).ToHashSet();
-        var allIds = req.Groups.SelectMany(g => g).ToList();
+        var allIds = groups.SelectMany(g => g).ToList();
         var unknown = allIds.Where(id => !registeredIds.Contains(id)).ToList();
         if (unknown.Count > 0)
             return Problem(
@@ -274,7 +302,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var now = DateTime.UtcNow;
         var def = tournament.Format.Defaults;
 
-        foreach (var group in req.Groups)
+        foreach (var group in groups)
         {
             // Singleton group → walkover for the sole participant.
             if (group.Count == 1)
@@ -333,6 +361,11 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         }
 
         db.Matches.AddRange(created);
+
+        // Generation completes the setup stage: groups get locked.
+        if (tournament.Status == TournamentStatus.Draft)
+            tournament.Status = TournamentStatus.Scheduled;
+
         await db.SaveChangesAsync(ct);
 
         var responses = created.Select(m => m.ToResponse(tournament)).ToList();

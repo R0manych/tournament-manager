@@ -259,6 +259,29 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
         var (valid, error) = IsValidTransition(tournament.Status, newStatus);
         if (!valid) return Problem(error, statusCode: 409);
 
+        // Rollback to Draft deletes generated fights so groups become editable
+        // again. From Scheduled only unstarted fights may exist; from Active this
+        // is the admin-confirmed "reset fights" — results are deleted as well.
+        if (newStatus == TournamentStatus.Draft
+            && tournament.Status is TournamentStatus.Scheduled or TournamentStatus.Active)
+        {
+            if (tournament.Status == TournamentStatus.Scheduled)
+            {
+                var started = tournament.Matches.Any(m =>
+                    m.Status is MatchStatus.InProgress or MatchStatus.Completed);
+                if (started)
+                    return Problem(
+                        "Some fights have already started; use the reset from Active status.",
+                        statusCode: 409);
+            }
+
+            var encounters = await db.Encounters
+                .Where(e => e.TournamentId == id)
+                .ToListAsync(ct);
+            db.Encounters.RemoveRange(encounters);
+            db.Matches.RemoveRange(tournament.Matches);
+        }
+
         tournament.Status = newStatus;
         await db.SaveChangesAsync(ct);
 
@@ -269,9 +292,14 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
     private static (bool valid, string error) IsValidTransition(TournamentStatus from, TournamentStatus to) =>
         (from, to) switch
         {
+            (TournamentStatus.Draft, TournamentStatus.Scheduled) => (true, ""),
             (TournamentStatus.Draft, TournamentStatus.Active) => (true, ""),
             (TournamentStatus.Draft, TournamentStatus.Cancelled) => (true, ""),
+            (TournamentStatus.Scheduled, TournamentStatus.Active) => (true, ""),
+            (TournamentStatus.Scheduled, TournamentStatus.Draft) => (true, ""),
+            (TournamentStatus.Scheduled, TournamentStatus.Cancelled) => (true, ""),
             (TournamentStatus.Active, TournamentStatus.Completed) => (true, ""),
+            (TournamentStatus.Active, TournamentStatus.Draft) => (true, ""),
             (TournamentStatus.Active, TournamentStatus.Cancelled) => (true, ""),
             (TournamentStatus.Completed, TournamentStatus.Active) => (true, ""),
             (TournamentStatus.Cancelled, TournamentStatus.Draft) => (true, ""),

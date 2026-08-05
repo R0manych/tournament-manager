@@ -86,6 +86,11 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
         };
 
         db.Encounters.Add(encounter);
+
+        // First generated encounter locks the setup stage (groups become read-only).
+        if (tournament.Status == TournamentStatus.Draft)
+            tournament.Status = TournamentStatus.Scheduled;
+
         await db.SaveChangesAsync(ct);
 
         return CreatedAtAction(
@@ -115,6 +120,9 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
         {
             case MatchStatus.InProgress when encounter.Status == MatchStatus.Scheduled:
                 encounter.StartedAt = now;
+                // First started encounter moves the tournament to Active.
+                if (encounter.Tournament.Status == TournamentStatus.Scheduled)
+                    encounter.Tournament.Status = TournamentStatus.Active;
                 break;
 
             case MatchStatus.InProgress when encounter.Status == MatchStatus.Completed:
