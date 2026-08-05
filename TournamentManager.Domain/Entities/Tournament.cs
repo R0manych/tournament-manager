@@ -33,4 +33,5 @@ public class Tournament
     public List<Document> Documents { get; set; } = new();
     public List<Team> Teams { get; set; } = new();
     public List<Encounter> Encounters { get; set; } = new();
+    public List<TournamentGroup> Groups { get; set; } = new();
 }

@@ -22,6 +22,7 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
     public DbSet<Team> Teams => Set<Team>();
     public DbSet<TeamMember> TeamMembers => Set<TeamMember>();
     public DbSet<Encounter> Encounters => Set<Encounter>();
+    public DbSet<TournamentGroup> TournamentGroups => Set<TournamentGroup>();
     //public DbSet<Document> Documents => Set<Document>();
 
     protected override void OnModelCreating(ModelBuilder m)
@@ -65,6 +66,11 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
                 .OnDelete(DeleteBehavior.Cascade);
 
             b.HasMany(t => t.Encounters)
+                .WithOne(x => x.Tournament)
+                .HasForeignKey(x => x.TournamentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            b.HasMany(t => t.Groups)
                 .WithOne(x => x.Tournament)
                 .HasForeignKey(x => x.TournamentId)
                 .OnDelete(DeleteBehavior.Cascade);
@@ -229,6 +235,17 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
             b.ToTable(t => t.HasCheckConstraint(
                 "CK_Encounter_Participant1NotEqualParticipant2",
                 "\"Participant1Id\" <> \"Participant2Id\""));
+        });
+
+        // TournamentGroup — ParticipantIds maps to uuid[] (ordered, polymorphic ids)
+        m.Entity<TournamentGroup>(b =>
+        {
+            b.HasKey(g => g.Id);
+            b.Property(g => g.PhaseId).IsRequired().HasMaxLength(100);
+            b.Property(g => g.Label).IsRequired().HasMaxLength(10);
+            b.Property(g => g.UpdatedAt).HasColumnType("timestamp with time zone");
+
+            b.HasIndex(g => new { g.TournamentId, g.PhaseId, g.Label }).IsUnique();
         });
 
         // Document
