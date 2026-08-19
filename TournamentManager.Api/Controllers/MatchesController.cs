@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using TournamentManager.Api.Common;
 using TournamentManager.Api.Dto.Matches;
+using TournamentManager.Api.Dto.Placements;
 using TournamentManager.Api.Mapping;
 using TournamentManager.Domain.Entities;
 using TournamentManager.Domain.Enums;
@@ -28,7 +30,16 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             .OrderBy(m => m.CreatedAt)
             .ToListAsync(ct);
 
-        return Ok(matches.Select(m => m.ToResponse(m.Tournament)).ToList());
+        // Placements ride along in MatchResponse so the bracket can be drawn from one
+        // request; GET /placements exists for callers that only need the layout.
+        var placements = await db.MatchPlacements
+            .AsNoTracking()
+            .Where(x => x.TournamentId == tournamentId)
+            .ToDictionaryAsync(x => x.MatchId, ct);
+
+        return Ok(matches
+            .Select(m => m.ToResponse(m.Tournament, placements.GetValueOrDefault(m.Id)))
+            .ToList());
     }
 
     [HttpGet("matches/{id:guid}")]
@@ -41,7 +52,13 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             .AsNoTracking()
             .FirstOrDefaultAsync(m => m.Id == id, ct);
 
-        return match is null ? NotFound() : Ok(match.ToResponse(match.Tournament));
+        if (match is null) return NotFound();
+
+        var placement = await db.MatchPlacements
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.MatchId == id, ct);
+
+        return Ok(match.ToResponse(match.Tournament, placement));
     }
 
     [HttpPost("tournaments/{tournamentId:guid}/matches")]
@@ -64,6 +81,30 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
                 .AnyAsync(p => p.TournamentId == tournamentId && p.ParticipantId == req.Fighter2Id.Value, ct);
             if (!p2InTournament)
                 return Problem($"Participant {req.Fighter2Id} is not registered in this tournament.", statusCode: 400);
+        }
+
+        // Bracket cell, if the caller named one. Validated before anything is created, so a
+        // bad placement never leaves a match behind (docs/08, §8).
+        var requested = req.Placement;
+        if (requested is not null)
+        {
+            var placementError = await PlacementGuard.ValidateAsync(db, tournament, requested, ct);
+            if (placementError is not null) return Problem(placementError, statusCode: 400);
+
+            var occupied = await db.MatchPlacements.AnyAsync(
+                x => x.TournamentId == tournamentId
+                     && x.PhaseId == requested.PhaseId
+                     && x.RoundId == requested.RoundId
+                     && x.SlotIndex == requested.SlotIndex, ct);
+
+            // This 409 is what makes playoff generation idempotent: a repeated run collides
+            // with the occupied cell instead of silently creating a duplicate fight.
+            if (occupied)
+                return Problem(
+                    $"Bracket cell {requested.PhaseId}/{requested.RoundId}#{requested.SlotIndex} " +
+                    "is already taken by another match.",
+                    title: "Bracket cell is occupied",
+                    statusCode: 409);
         }
 
         var now = DateTime.UtcNow;
@@ -91,6 +132,22 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         db.Matches.Add(match);
 
+        MatchPlacement? placement = null;
+        if (requested is not null)
+        {
+            placement = new MatchPlacement
+            {
+                Id = Guid.NewGuid(),
+                TournamentId = tournamentId,
+                PhaseId = requested.PhaseId,
+                RoundId = requested.RoundId,
+                SlotIndex = requested.SlotIndex,
+                MatchId = match.Id,
+                CreatedAt = now,
+            };
+            db.MatchPlacements.Add(placement);
+        }
+
         // First generated fight locks the setup stage (groups become read-only).
         if (tournament.Status == TournamentStatus.Draft)
             tournament.Status = TournamentStatus.Scheduled;
@@ -98,7 +155,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         await db.SaveChangesAsync(ct);
 
         match.Tournament = tournament;
-        return CreatedAtAction(nameof(GetById), new { id = match.Id }, match.ToResponse(tournament));
+        return CreatedAtAction(nameof(GetById), new { id = match.Id }, match.ToResponse(tournament, placement));
     }
 
     [HttpPatch("matches/{id:guid}")]
@@ -161,10 +218,22 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
                 break;
         }
 
+        // Cancelling frees the bracket cell, so the organiser can recreate the fight there
+        // without an extra call (docs/08, ОВ-3). The cancelled match keeps existing, it just
+        // stops belonging to the bracket.
+        if (newStatus == MatchStatus.Cancelled)
+        {
+            var freed = await db.MatchPlacements.FirstOrDefaultAsync(x => x.MatchId == id, ct);
+            if (freed is not null) db.MatchPlacements.Remove(freed);
+        }
+
         match.Status = newStatus;
         await db.SaveChangesAsync(ct);
 
-        return Ok(match.ToResponse(match.Tournament));
+        var current = newStatus == MatchStatus.Cancelled
+            ? null
+            : await db.MatchPlacements.AsNoTracking().FirstOrDefaultAsync(x => x.MatchId == id, ct);
+        return Ok(match.ToResponse(match.Tournament, current));
     }
 
     [HttpPatch("matches/{id:guid}/warnings")]
@@ -251,22 +320,34 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         if (phase is null)
             return Problem($"Round-robin phase '{req.PhaseId}' not found in format.", statusCode: 400);
 
-        // Groups omitted → use the saved composition of this phase.
-        var groups = req.Groups;
-        if (groups is null || groups.Count == 0)
+        // Groups omitted → use the saved composition of this phase. Labels come along now:
+        // the bracket cell of a group-stage match is (phase, group label, pair index),
+        // see docs/08 §7.
+        List<(string Label, List<Guid> Ids)> labelled;
+        if (req.Groups is { Count: > 0 })
         {
-            groups = await db.TournamentGroups
+            // Groups passed in the body carry no labels — fall back to the A, B, C…
+            // convention the format and the UI use for group codes.
+            labelled = req.Groups.Select((ids, i) => (GroupLabel(i), ids)).ToList();
+        }
+        else
+        {
+            var saved = await db.TournamentGroups
                 .AsNoTracking()
                 .Where(g => g.TournamentId == tournamentId && g.PhaseId == req.PhaseId)
                 .OrderBy(g => g.OrderIndex)
-                .Select(g => g.ParticipantIds)
+                .Select(g => new { g.Label, g.ParticipantIds })
                 .ToListAsync(ct);
 
-            if (groups.Count == 0)
+            if (saved.Count == 0)
                 return Problem(
                     $"No saved groups for phase '{req.PhaseId}'. Save groups first or pass them in the request.",
                     statusCode: 400);
+
+            labelled = saved.Select(g => (g.Label, g.ParticipantIds)).ToList();
         }
+
+        var groups = labelled.Select(g => g.Ids).ToList();
 
         // Validate all participants belong to the tournament
         var registeredIds = tournament.Participants.Select(p => p.ParticipantId).ToHashSet();
@@ -297,23 +378,47 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             .Select(m => P1(m)!.Value)
             .ToHashSet();
 
+        // Cells of this phase that already hold a match. Together with the pair check below
+        // this keeps the endpoint idempotent from both directions: a rerun neither duplicates
+        // a pair nor overwrites a cell.
+        var occupiedCells = (await db.MatchPlacements
+                .AsNoTracking()
+                .Where(x => x.TournamentId == tournamentId && x.PhaseId == req.PhaseId)
+                .Select(x => new { x.RoundId, x.SlotIndex })
+                .ToListAsync(ct))
+            .Select(x => (x.RoundId, x.SlotIndex))
+            .ToHashSet();
+
         var created = new List<Match>();
+        var createdPlacements = new List<MatchPlacement>();
         int skipped = 0;
         var now = DateTime.UtcNow;
         var def = tournament.Format.Defaults;
 
-        foreach (var group in groups)
+        void Place(Match m, string label, int slotIndex) =>
+            createdPlacements.Add(new MatchPlacement
+            {
+                Id = Guid.NewGuid(),
+                TournamentId = tournamentId,
+                PhaseId = req.PhaseId,
+                RoundId = label,
+                SlotIndex = slotIndex,
+                MatchId = m.Id,
+                CreatedAt = now,
+            });
+
+        foreach (var (label, group) in labelled)
         {
             // Singleton group → walkover for the sole participant.
             if (group.Count == 1)
             {
-                if (!existingWalkovers.Add(group[0]))
+                if (!existingWalkovers.Add(group[0]) || !occupiedCells.Add((label, 0)))
                 {
                     skipped++;
                     continue;
                 }
 
-                created.Add(new Match
+                var bye = new Match
                 {
                     Id = Guid.NewGuid(),
                     TournamentId = tournamentId,
@@ -327,22 +432,27 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
                     MaxDoubles = def?.MaxDoubles,
                     MaxWarnings = def?.MaxWarnings,
                     CreatedAt = now,
-                });
+                };
+                created.Add(bye);
+                Place(bye, label, 0);
                 continue;
             }
 
+            // slotIndex counts every candidate pair, skipped ones included: the cell of a
+            // pair must not move just because an earlier pair already existed.
+            var slotIndex = 0;
             for (int i = 0; i < group.Count; i++)
             {
-                for (int j = i + 1; j < group.Count; j++)
+                for (int j = i + 1; j < group.Count; j++, slotIndex++)
                 {
                     var key = NormPair(group[i], group[j]);
-                    if (!existingPairs.Add(key))
+                    if (!existingPairs.Add(key) || !occupiedCells.Add((label, slotIndex)))
                     {
                         skipped++;
                         continue;
                     }
 
-                    created.Add(new Match
+                    var match = new Match
                     {
                         Id = Guid.NewGuid(),
                         TournamentId = tournamentId,
@@ -355,12 +465,15 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
                         MaxDoubles = def?.MaxDoubles,
                         MaxWarnings = def?.MaxWarnings,
                         CreatedAt = now,
-                    });
+                    };
+                    created.Add(match);
+                    Place(match, label, slotIndex);
                 }
             }
         }
 
         db.Matches.AddRange(created);
+        db.MatchPlacements.AddRange(createdPlacements);
 
         // Generation completes the setup stage: groups get locked.
         if (tournament.Status == TournamentStatus.Draft)
@@ -368,9 +481,17 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         await db.SaveChangesAsync(ct);
 
-        var responses = created.Select(m => m.ToResponse(tournament)).ToList();
+        var placementByMatch = createdPlacements.ToDictionary(x => x.MatchId);
+        var responses = created
+            .Select(m => m.ToResponse(tournament, placementByMatch.GetValueOrDefault(m.Id)))
+            .ToList();
         return Ok(new GenerateRoundRobinResponse(created.Count, skipped, responses));
     }
+
+    // Group codes as the format writes them: groups.A, groups.B, … Beyond 26 groups the
+    // letters run out; those get a positional label, which is still unique within the phase.
+    private static string GroupLabel(int index) =>
+        index < 26 ? ((char)('A' + index)).ToString() : $"G{index + 1}";
 
     private static (Guid, Guid) NormPair(Guid a, Guid b) =>
         a < b ? (a, b) : (b, a);

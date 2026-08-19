@@ -944,8 +944,9 @@ public class TournamentFormatParser : ITournamentFormatParser
                 }
             }
 
-            var effectiveRounds = phase.Rounds ?? GetSystemRounds(slotCount);
-            var allRoundIds = effectiveRounds.Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
+            // Includes the synthetic `thirdPlace` id when the phase plays a third-place
+            // match — see FormatRoundCatalog.
+            var allRoundIds = FormatRoundCatalog.SingleEliminationRoundIds(phase);
             for (var i = 0; i < phase.Overrides.Count; i++)
             {
                 if (!allRoundIds.Contains(phase.Overrides[i].RoundId))
@@ -1575,13 +1576,4 @@ public class TournamentFormatParser : ITournamentFormatParser
 
     private static bool IsPowerOfTwo(int n) => n > 0 && (n & (n - 1)) == 0;
 
-    private static List<RoundSpec> GetSystemRounds(int slotCount) => slotCount switch
-    {
-        2 => [new("final", "Final")],
-        4 => [new("semiFinal", "Semi-final"), new("final", "Final")],
-        8 => [new("quarterFinal", "Quarter-final"), new("semiFinal", "Semi-final"), new("final", "Final")],
-        16 => [new("roundOf16", "Round of 16"), new("quarterFinal", "Quarter-final"), new("semiFinal", "Semi-final"), new("final", "Final")],
-        32 => [new("roundOf32", "Round of 32"), new("roundOf16", "Round of 16"), new("quarterFinal", "Quarter-final"), new("semiFinal", "Semi-final"), new("final", "Final")],
-        _ => [],
-    };
 }

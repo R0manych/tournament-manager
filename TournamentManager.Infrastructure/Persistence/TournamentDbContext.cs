@@ -23,6 +23,7 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
     public DbSet<TeamMember> TeamMembers => Set<TeamMember>();
     public DbSet<Encounter> Encounters => Set<Encounter>();
     public DbSet<TournamentGroup> TournamentGroups => Set<TournamentGroup>();
+    public DbSet<MatchPlacement> MatchPlacements => Set<MatchPlacement>();
     //public DbSet<Document> Documents => Set<Document>();
 
     protected override void OnModelCreating(ModelBuilder m)
@@ -246,6 +247,32 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
             b.Property(g => g.UpdatedAt).HasColumnType("timestamp with time zone");
 
             b.HasIndex(g => new { g.TournamentId, g.PhaseId, g.Label }).IsUnique();
+        });
+
+        // MatchPlacement — one bracket cell holds at most one match, and a match sits in at
+        // most one cell (docs/08, invariant 43). Both are enforced by unique indexes rather
+        // than by application code, because the playoff generator relies on the 409 they
+        // produce for its idempotency.
+        m.Entity<MatchPlacement>(b =>
+        {
+            b.HasKey(x => x.Id);
+            b.Property(x => x.PhaseId).IsRequired().HasMaxLength(100);
+            b.Property(x => x.RoundId).IsRequired().HasMaxLength(100);
+            b.Property(x => x.CreatedAt).HasColumnType("timestamp with time zone");
+
+            b.HasOne(x => x.Tournament)
+                .WithMany()
+                .HasForeignKey(x => x.TournamentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Deleting the match frees its cell.
+            b.HasOne(x => x.Match)
+                .WithMany()
+                .HasForeignKey(x => x.MatchId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            b.HasIndex(x => new { x.TournamentId, x.PhaseId, x.RoundId, x.SlotIndex }).IsUnique();
+            b.HasIndex(x => x.MatchId).IsUnique();
         });
 
         // Document

@@ -1,3 +1,5 @@
+using TournamentManager.Api.Dto.Placements;
+
 namespace TournamentManager.Api.Dto.Matches;
 
 public record CreateMatchRequest(
@@ -6,4 +8,7 @@ public record CreateMatchRequest(
     DateTime? ScheduledAt,
     int? RoundDurationSeconds,
     int? MaxDoubles,
-    int? MaxWarnings);
+    int? MaxWarnings,
+    // Optional: where in the bracket this match belongs. Omitted by manual creation and by
+    // clients that predate placements — a match without a cell stays legal (invariant 46).
+    MatchPlacementRequest? Placement = null);

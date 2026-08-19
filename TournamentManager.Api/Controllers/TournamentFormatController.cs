@@ -12,9 +12,10 @@ namespace TournamentManager.Api.Controllers;
 public class TournamentFormatController(TournamentDbContext db, ITournamentFormatParser parser) : ControllerBase
 {
     private const string ForceHint =
-        "Pass ?force=true to replace it anyway; saved group compositions of phases " +
-        "that are missing from the new format are discarded, and already generated " +
-        "matches are left as they are — they may no longer match the new bracket.";
+        "Pass ?force=true to replace it anyway; saved group compositions and bracket " +
+        "placements of phases that are missing from the new format are discarded, and " +
+        "already generated matches are left as they are — they may no longer match the " +
+        "new bracket.";
 
     // force=true is the organiser's explicit "I accept the consequences": the format
     // changes under matches that were generated from the old one. Everything the new
@@ -70,28 +71,42 @@ public class TournamentFormatController(TournamentDbContext db, ITournamentForma
         // Only a forced replace prunes groups: without force the tournament is still in
         // Draft, where the organiser is expected to fix the composition themselves.
         var cleared = 0;
+        var placementsCleared = 0;
         if (force)
         {
-            var survivingPhases = result.Format!.Phases
+            var survivingGroupPhases = result.Format!.Phases
                 .OfType<RoundRobinPhase>()
                 .Select(p => p.Id)
                 .ToHashSet();
 
             var orphaned = await db.TournamentGroups
-                .Where(g => g.TournamentId == tournamentId && !survivingPhases.Contains(g.PhaseId))
+                .Where(g => g.TournamentId == tournamentId && !survivingGroupPhases.Contains(g.PhaseId))
                 .ToListAsync(ct);
 
             db.TournamentGroups.RemoveRange(orphaned);
             cleared = orphaned.Count;
+
+            // Placements live in every kind of phase, not just round-robin, so they are
+            // pruned against the full phase list (docs/08, invariant 45). Matches themselves
+            // survive — dropping them is what the rollback to Draft is for.
+            var survivingPhases = result.Format.Phases.Select(p => p.Id).ToHashSet();
+
+            var orphanedPlacements = await db.MatchPlacements
+                .Where(x => x.TournamentId == tournamentId && !survivingPhases.Contains(x.PhaseId))
+                .ToListAsync(ct);
+
+            db.MatchPlacements.RemoveRange(orphanedPlacements);
+            placementsCleared = orphanedPlacements.Count;
         }
 
         tournament.Format = result.Format;
         tournament.FormatYaml = yaml;
         await db.SaveChangesAsync(ct);
 
-        // Body stays the parsed format — the count rides along in a header so the
-        // client can invalidate its groups cache without a contract change.
+        // Body stays the parsed format — the counts ride along in headers so the
+        // client can invalidate its groups and bracket caches without a contract change.
         Response.Headers["X-Groups-Cleared"] = cleared.ToString();
+        Response.Headers["X-Placements-Cleared"] = placementsCleared.ToString();
         return Ok(result.Format);
     }
 
@@ -138,8 +153,9 @@ public class TournamentFormatController(TournamentDbContext db, ITournamentForma
                 Detail = TournamentSetupGuard.LockedDetail(tournament, "delete the format", ForceHint),
             });
 
-        // Without a format no phase exists, so every saved group is orphaned.
+        // Without a format no phase exists, so every saved group and every placement is orphaned.
         var cleared = 0;
+        var placementsCleared = 0;
         if (force)
         {
             var groups = await db.TournamentGroups
@@ -148,6 +164,13 @@ public class TournamentFormatController(TournamentDbContext db, ITournamentForma
 
             db.TournamentGroups.RemoveRange(groups);
             cleared = groups.Count;
+
+            var placements = await db.MatchPlacements
+                .Where(x => x.TournamentId == tournamentId)
+                .ToListAsync(ct);
+
+            db.MatchPlacements.RemoveRange(placements);
+            placementsCleared = placements.Count;
         }
 
         tournament.Format = null;
@@ -155,6 +178,7 @@ public class TournamentFormatController(TournamentDbContext db, ITournamentForma
         await db.SaveChangesAsync(ct);
 
         Response.Headers["X-Groups-Cleared"] = cleared.ToString();
+        Response.Headers["X-Placements-Cleared"] = placementsCleared.ToString();
         return NoContent();
     }
 }
