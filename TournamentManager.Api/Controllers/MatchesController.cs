@@ -54,11 +54,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         if (match is null) return NotFound();
 
-        var placement = await db.MatchPlacements
-            .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.MatchId == id, ct);
-
-        return Ok(match.ToResponse(match.Tournament, placement));
+        return Ok(match.ToResponse(match.Tournament, await db.PlacementOfAsync(id, ct)));
     }
 
     [HttpPost("tournaments/{tournamentId:guid}/matches")]
@@ -236,7 +232,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         var current = newStatus == MatchStatus.Cancelled
             ? null
-            : await db.MatchPlacements.AsNoTracking().FirstOrDefaultAsync(x => x.MatchId == id, ct);
+            : await db.PlacementOfAsync(id, ct);
         return Ok(match.ToResponse(match.Tournament, current));
     }
 
@@ -260,7 +256,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             match.Warnings2 = Math.Max(0, match.Warnings2 + req.Fighter2Delta.Value);
 
         await db.SaveChangesAsync(ct);
-        return Ok(match.ToResponse(match.Tournament));
+        return Ok(match.ToResponse(match.Tournament, await db.PlacementOfAsync(id, ct)));
     }
 
     [HttpPost("matches/{id:guid}/advance-round")]
@@ -280,7 +276,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         match.CurrentRoundStartedAt = DateTime.UtcNow;
 
         await db.SaveChangesAsync(ct);
-        return Ok(match.ToResponse(match.Tournament));
+        return Ok(match.ToResponse(match.Tournament, await db.PlacementOfAsync(id, ct)));
     }
 
     [HttpDelete("matches/{id:guid}")]

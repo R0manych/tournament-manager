@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using TournamentManager.Api.Common;
 using TournamentManager.Api.Dto.Matches;
 using TournamentManager.Api.Mapping;
 using TournamentManager.Domain.Entities;
@@ -15,9 +16,13 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
     [HttpPost("matches/{matchId:guid}/exchanges")]
     public async Task<IActionResult> Add(Guid matchId, AddExchangeRequest req, CancellationToken ct)
     {
+        // Encounter is included for the same reason the placement is fetched below: both feed
+        // the effective settings of the response (ТЗ §5.3). Without it a bout would report the
+        // tournament default instead of its series duration.
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
+            .Include(m => m.Encounter)
             .FirstOrDefaultAsync(m => m.Id == matchId, ct);
 
         if (match is null) return NotFound();
@@ -52,7 +57,7 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
         db.Exchanges.Add(exchange);
         await db.SaveChangesAsync(ct);
 
-        return Ok(match.ToResponse(match.Tournament));
+        return Ok(match.ToResponse(match.Tournament, await db.PlacementOfAsync(matchId, ct)));
     }
 
     [HttpPut("exchanges/{id:guid}")]
@@ -61,6 +66,7 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
         var exchange = await db.Exchanges
             .Include(e => e.Match).ThenInclude(m => m.Exchanges)
             .Include(e => e.Match.Tournament)
+            .Include(e => e.Match.Encounter)
             .FirstOrDefaultAsync(e => e.Id == id, ct);
 
         if (exchange is null) return NotFound();
@@ -86,7 +92,7 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
         exchange.Note = req.Note;
 
         await db.SaveChangesAsync(ct);
-        return Ok(match.ToResponse(match.Tournament));
+        return Ok(match.ToResponse(match.Tournament, await db.PlacementOfAsync(match.Id, ct)));
     }
 
     [HttpDelete("exchanges/{id:guid}")]
@@ -95,6 +101,7 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
         var exchange = await db.Exchanges
             .Include(e => e.Match).ThenInclude(m => m.Exchanges)
             .Include(e => e.Match.Tournament)
+            .Include(e => e.Match.Encounter)
             .FirstOrDefaultAsync(e => e.Id == id, ct);
 
         if (exchange is null) return NotFound();
@@ -110,6 +117,6 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
         db.Exchanges.Remove(exchange);
         await db.SaveChangesAsync(ct);
 
-        return Ok(match.ToResponse(match.Tournament));
+        return Ok(match.ToResponse(match.Tournament, await db.PlacementOfAsync(match.Id, ct)));
     }
 }
