@@ -71,6 +71,28 @@ public static class FormatRoundCatalog
         return ids;
     }
 
+    // The per-round override of match settings, if the phase declares one for this round.
+    // Same pairing as above, read from the other end: a round id that can be overridden is a
+    // round id a match can be placed in — so a placed match is exactly a match that knows
+    // which override applies to it (ТЗ §5.3). Without a placement the round is unknowable:
+    // Match carries no stage of its own (инвариант 23).
+    //
+    // roundRobin declares no overrides at all; the group stage has no round to single out.
+    // The parser does not reject two overrides for the same round, so document order decides
+    // and the first one wins.
+    public static RoundOverride? OverrideFor(TournamentFormat? format, string phaseId, string roundId)
+    {
+        List<RoundOverride>? overrides = format?.Phases.FirstOrDefault(p => p.Id == phaseId) switch
+        {
+            SingleEliminationPhase se => se.Overrides,
+            DoubleEliminationPhase de => de.Overrides,
+            SwissPhase sw => sw.Overrides,
+            _ => null,
+        };
+
+        return overrides?.FirstOrDefault(o => o.RoundId == roundId);
+    }
+
     // Round ids of any phase. savedGroupLabels is only consulted for roundRobin phases;
     // pass an empty sequence when the caller has no composition at hand.
     public static HashSet<string>? RoundIdsOf(
