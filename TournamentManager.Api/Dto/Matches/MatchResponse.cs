@@ -1,3 +1,5 @@
+using TournamentManager.Api.Dto.Placements;
+
 namespace TournamentManager.Api.Dto.Matches;
 
 public record MatchResponse(
@@ -27,4 +29,5 @@ public record MatchResponse(
     DateTime? CurrentRoundStartedAt,
     DateTime? EndedAt,
     DateTime CreatedAt,
-    List<ExchangeResponse> Exchanges);
+    List<ExchangeResponse> Exchanges,
+    MatchPlacementResponse? Placement = null);
