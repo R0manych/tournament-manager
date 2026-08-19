@@ -200,8 +200,10 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
         db.TournamentParticipants.Add(participant);
         await db.SaveChangesAsync(ct);
 
+        // Absolute path — see AddMember in TeamsController. The participant is
+        // addressable for DELETE and read through the tournament.
         return Created(
-            $"api/v1/tournaments/{id}/participants/{req.ParticipantId}",
+            $"/api/v1/tournaments/{id}/participants/{req.ParticipantId}",
             response);
     }
 
@@ -302,7 +304,13 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
             (TournamentStatus.Active, TournamentStatus.Draft) => (true, ""),
             (TournamentStatus.Active, TournamentStatus.Cancelled) => (true, ""),
             (TournamentStatus.Completed, TournamentStatus.Active) => (true, ""),
-            (TournamentStatus.Cancelled, TournamentStatus.Draft) => (true, ""),
+            // Cancelled is terminal. The restore that used to live here (Cancelled → Draft)
+            // did not delete the generated matches the way the other rollbacks do, so the
+            // tournament came back "in setup" with fights from its previous life — and with
+            // the freeze keyed on Status != Draft that also unlocked the format and groups.
+            // Reviving a cancelled tournament now means creating a new one.
+            (TournamentStatus.Cancelled, _) =>
+                (false, "Tournament is cancelled; this is a terminal status and cannot be changed."),
             _ => (false, $"Cannot transition from {from} to {to}.")
         };
 }
