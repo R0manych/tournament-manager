@@ -30,13 +30,13 @@ public class TeamsController(TournamentDbContext db) : ControllerBase
         return Ok(teams.Select(t => t.ToResponse()).ToList());
     }
 
-    [HttpGet("teams/{teamId:guid}")]
-    public async Task<IActionResult> GetById(Guid teamId, CancellationToken ct)
+    [HttpGet("teams/{id:guid}")]
+    public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
     {
         var team = await db.Teams
             .Include(t => t.Members).ThenInclude(m => m.Fighter)
             .AsNoTracking()
-            .FirstOrDefaultAsync(t => t.Id == teamId, ct);
+            .FirstOrDefaultAsync(t => t.Id == id, ct);
 
         return team is null ? NotFound() : Ok(team.ToResponse());
     }
@@ -68,21 +68,21 @@ public class TeamsController(TournamentDbContext db) : ControllerBase
         db.Teams.Add(team);
         await db.SaveChangesAsync(ct);
 
-        return CreatedAtAction(nameof(GetById), new { teamId = team.Id }, team.ToResponse());
+        return CreatedAtAction(nameof(GetById), new { id = team.Id }, team.ToResponse());
     }
 
-    [HttpPut("teams/{teamId:guid}")]
+    [HttpPut("teams/{id:guid}")]
     public async Task<IActionResult> Update(
-        Guid teamId, CreateTeamRequest req, CancellationToken ct)
+        Guid id, CreateTeamRequest req, CancellationToken ct)
     {
-        var team = await db.Teams.FindAsync([teamId], ct);
+        var team = await db.Teams.FindAsync([id], ct);
         if (team is null) return NotFound();
 
         if (team.Name != req.Name)
         {
             var nameTaken = await db.Teams
                 .AnyAsync(t => t.TournamentId == team.TournamentId
-                            && t.Id != teamId
+                            && t.Id != id
                             && t.Name == req.Name, ct);
             if (nameTaken)
                 return Problem($"Team '{req.Name}' already exists in this tournament.", statusCode: 409);
@@ -96,14 +96,14 @@ public class TeamsController(TournamentDbContext db) : ControllerBase
         return NoContent();
     }
 
-    [HttpDelete("teams/{teamId:guid}")]
-    public async Task<IActionResult> Delete(Guid teamId, CancellationToken ct)
+    [HttpDelete("teams/{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
-        var team = await db.Teams.FindAsync([teamId], ct);
+        var team = await db.Teams.FindAsync([id], ct);
         if (team is null) return NotFound();
 
         var hasEncounters = await db.Encounters
-            .AnyAsync(e => e.Participant1Id == teamId || e.Participant2Id == teamId, ct);
+            .AnyAsync(e => e.Participant1Id == id || e.Participant2Id == id, ct);
         if (hasEncounters)
             return Problem(
                 "Team is referenced by encounters; cancel or delete them first.",
@@ -159,7 +159,10 @@ public class TeamsController(TournamentDbContext db) : ControllerBase
         var response = new TeamMemberResponse(
             req.FighterId, fighter.FirstName, fighter.LastName, fighter.Club,
             req.Position, member.AddedAt);
-        return Created($"api/v1/teams/{teamId}/members/{req.FighterId}", response);
+        // Absolute path: a relative Location would resolve against the request URI
+        // and yield /api/v1/teams/{id}/api/v1/teams/... The member is addressable
+        // for DELETE; it is read through its team, not on its own.
+        return Created($"/api/v1/teams/{teamId}/members/{req.FighterId}", response);
     }
 
     [HttpDelete("teams/{teamId:guid}/members/{fighterId:guid}")]

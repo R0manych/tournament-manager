@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using TournamentManager.Api.Common;
+using TournamentManager.Domain.Format;
 using TournamentManager.Infrastructure.Format;
 using TournamentManager.Infrastructure.Persistence;
 
@@ -9,22 +11,29 @@ namespace TournamentManager.Api.Controllers;
 [Route("api/v1/tournaments/{tournamentId:guid}/format")]
 public class TournamentFormatController(TournamentDbContext db, ITournamentFormatParser parser) : ControllerBase
 {
+    private const string ForceHint =
+        "Pass ?force=true to replace it anyway; saved group compositions of phases " +
+        "that are missing from the new format are discarded, and already generated " +
+        "matches are left as they are — they may no longer match the new bracket.";
+
+    // force=true is the organiser's explicit "I accept the consequences": the format
+    // changes under matches that were generated from the old one. Everything the new
+    // format no longer describes is dropped rather than left dangling (B-2).
     [HttpPut]
-    public async Task<IActionResult> UploadFormat(Guid tournamentId, CancellationToken ct)
+    public async Task<IActionResult> UploadFormat(Guid tournamentId, [FromQuery] bool force, CancellationToken ct)
     {
         var tournament = await db.Tournaments
-            .Include(t => t.Matches)
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct);
 
         if (tournament == null) return NotFound();
 
-        if (tournament.Matches.Count > 0)
+        if (TournamentSetupGuard.IsLocked(tournament) && !force)
             return Conflict(new ProblemDetails
             {
                 Type = "https://tools.ietf.org/html/rfc7807#format-frozen",
                 Title = "Tournament format is frozen",
                 Status = 409,
-                Detail = $"Tournament has {tournament.Matches.Count} matches; format cannot be changed.",
+                Detail = TournamentSetupGuard.LockedDetail(tournament, "change the format", ForceHint),
             });
 
         string yaml;
@@ -58,10 +67,31 @@ public class TournamentFormatController(TournamentDbContext db, ITournamentForma
             return new ObjectResult(problem) { StatusCode = 400 };
         }
 
+        // Only a forced replace prunes groups: without force the tournament is still in
+        // Draft, where the organiser is expected to fix the composition themselves.
+        var cleared = 0;
+        if (force)
+        {
+            var survivingPhases = result.Format!.Phases
+                .OfType<RoundRobinPhase>()
+                .Select(p => p.Id)
+                .ToHashSet();
+
+            var orphaned = await db.TournamentGroups
+                .Where(g => g.TournamentId == tournamentId && !survivingPhases.Contains(g.PhaseId))
+                .ToListAsync(ct);
+
+            db.TournamentGroups.RemoveRange(orphaned);
+            cleared = orphaned.Count;
+        }
+
         tournament.Format = result.Format;
         tournament.FormatYaml = yaml;
         await db.SaveChangesAsync(ct);
 
+        // Body stays the parsed format — the count rides along in a header so the
+        // client can invalidate its groups cache without a contract change.
+        Response.Headers["X-Groups-Cleared"] = cleared.ToString();
         return Ok(result.Format);
     }
 
@@ -92,27 +122,39 @@ public class TournamentFormatController(TournamentDbContext db, ITournamentForma
     }
 
     [HttpDelete]
-    public async Task<IActionResult> DeleteFormat(Guid tournamentId, CancellationToken ct)
+    public async Task<IActionResult> DeleteFormat(Guid tournamentId, [FromQuery] bool force, CancellationToken ct)
     {
         var tournament = await db.Tournaments
-            .Include(t => t.Matches)
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct);
 
         if (tournament == null) return NotFound();
 
-        if (tournament.Matches.Count > 0)
+        if (TournamentSetupGuard.IsLocked(tournament) && !force)
             return Conflict(new ProblemDetails
             {
                 Type = "https://tools.ietf.org/html/rfc7807#format-frozen",
                 Title = "Tournament format is frozen",
                 Status = 409,
-                Detail = $"Tournament has {tournament.Matches.Count} matches; format cannot be deleted.",
+                Detail = TournamentSetupGuard.LockedDetail(tournament, "delete the format", ForceHint),
             });
+
+        // Without a format no phase exists, so every saved group is orphaned.
+        var cleared = 0;
+        if (force)
+        {
+            var groups = await db.TournamentGroups
+                .Where(g => g.TournamentId == tournamentId)
+                .ToListAsync(ct);
+
+            db.TournamentGroups.RemoveRange(groups);
+            cleared = groups.Count;
+        }
 
         tournament.Format = null;
         tournament.FormatYaml = null;
         await db.SaveChangesAsync(ct);
 
+        Response.Headers["X-Groups-Cleared"] = cleared.ToString();
         return NoContent();
     }
 }

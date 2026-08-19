@@ -1,8 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using TournamentManager.Api.Common;
 using TournamentManager.Api.Dto.Groups;
 using TournamentManager.Domain.Entities;
-using TournamentManager.Domain.Enums;
 using TournamentManager.Domain.Format;
 using TournamentManager.Infrastructure.Persistence;
 
@@ -12,6 +12,9 @@ namespace TournamentManager.Api.Controllers;
 [Route("api/v1")]
 public class GroupsController(TournamentDbContext db) : ControllerBase
 {
+    // Read-only summary across every phase of the tournament. The editable
+    // resource is the per-phase collection below — this one is deliberately
+    // GET-only, since a tournament-wide replace has no meaningful semantics.
     [HttpGet("tournaments/{tournamentId:guid}/groups")]
     public async Task<IActionResult> GetAll(Guid tournamentId, CancellationToken ct)
     {
@@ -27,34 +30,58 @@ public class GroupsController(TournamentDbContext db) : ControllerBase
         return Ok(groups.Select(ToResponse).ToList());
     }
 
+    // The exact resource PUT below replaces — same URI, same representation.
+    [HttpGet("tournaments/{tournamentId:guid}/phases/{phaseId}/groups")]
+    public async Task<IActionResult> GetByPhase(Guid tournamentId, string phaseId, CancellationToken ct)
+    {
+        var exists = await db.Tournaments.AnyAsync(t => t.Id == tournamentId, ct);
+        if (!exists) return NotFound();
+
+        var groups = await db.TournamentGroups
+            .AsNoTracking()
+            .Where(g => g.TournamentId == tournamentId && g.PhaseId == phaseId)
+            .OrderBy(g => g.OrderIndex)
+            .ToListAsync(ct);
+
+        return Ok(groups.Select(ToResponse).ToList());
+    }
+
     // Replaces the saved composition of one phase's groups (create and manual edit
     // go through the same endpoint). Editing groups that already have generated
     // matches is allowed — the client is responsible for warning the user.
-    [HttpPut("tournaments/{tournamentId:guid}/groups")]
-    public async Task<IActionResult> Save(Guid tournamentId, SaveGroupsRequest req, CancellationToken ct)
+    [HttpPut("tournaments/{tournamentId:guid}/phases/{phaseId}/groups")]
+    public async Task<IActionResult> Save(
+        Guid tournamentId, string phaseId, SaveGroupsRequest req, CancellationToken ct)
     {
         var tournament = await db.Tournaments
             .Include(t => t.Participants)
-            .Include(t => t.Groups.Where(g => g.PhaseId == req.PhaseId))
+            .Include(t => t.Groups.Where(g => g.PhaseId == phaseId))
             .FirstOrDefaultAsync(t => t.Id == tournamentId, ct);
 
         if (tournament is null) return NotFound();
 
-        // Groups are only editable during setup; after match generation the
-        // tournament moves to Scheduled and requires a confirmed rollback to Draft.
-        if (tournament.Status != TournamentStatus.Draft)
+        if (req.PhaseId is not null && req.PhaseId != phaseId)
             return Problem(
-                $"Groups can only be edited while the tournament is in Draft (current: {tournament.Status}). " +
-                "Roll the tournament back to Draft first.",
+                $"phaseId in the body ('{req.PhaseId}') does not match the route ('{phaseId}'). " +
+                "The route is authoritative; omit the field from the body.",
+                statusCode: 400);
+
+        // Groups are only editable during setup; after match generation the tournament
+        // moves to Scheduled and requires a confirmed rollback to Draft. Same criterion
+        // as the format freeze — see TournamentSetupGuard.
+        if (TournamentSetupGuard.IsLocked(tournament))
+            return Problem(
+                TournamentSetupGuard.LockedDetail(tournament, "edit the group composition"),
+                title: "Tournament setup is frozen",
                 statusCode: 409);
 
         if (tournament.Format is null)
             return Problem("Tournament has no format uploaded.", statusCode: 400);
 
         var phase = tournament.Format.Phases.OfType<RoundRobinPhase>()
-            .FirstOrDefault(p => p.Id == req.PhaseId);
+            .FirstOrDefault(p => p.Id == phaseId);
         if (phase is null)
-            return Problem($"Round-robin phase '{req.PhaseId}' not found in format.", statusCode: 400);
+            return Problem($"Round-robin phase '{phaseId}' not found in format.", statusCode: 400);
 
         if (req.Groups is null || req.Groups.Count == 0)
             return Problem("At least one group is required.", statusCode: 400);
@@ -82,7 +109,7 @@ public class GroupsController(TournamentDbContext db) : ControllerBase
         {
             Id = Guid.NewGuid(),
             TournamentId = tournamentId,
-            PhaseId = req.PhaseId,
+            PhaseId = phaseId,
             Label = g.Label,
             OrderIndex = i,
             ParticipantIds = g.ParticipantIds,
