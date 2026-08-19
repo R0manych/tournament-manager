@@ -1,0 +1,33 @@
+using Zettel.Api.Dto.Placements;
+
+namespace Zettel.Api.Dto.Matches;
+
+public record MatchResponse(
+    Guid Id,
+    Guid TournamentId,
+    Guid? Fighter1Id,
+    Guid? Fighter2Id,
+    DateTime? ScheduledAt,
+    string Status,
+    int Score1,
+    int Score2,
+    int Warnings1,
+    int Warnings2,
+    int DoubleHitsCount,
+    Guid? WinnerId,
+    int? RoundDurationSeconds,
+    int? MaxDoubles,
+    int? MaxWarnings,
+    int? EffectiveRoundDurationSeconds,
+    int? EffectiveMaxDoubles,
+    int? EffectiveMaxWarnings,
+    Guid? EncounterId,
+    int? BoutNumber,
+    int? TargetCumulativeScore,
+    DateTime? StartedAt,
+    int CurrentRoundNumber,
+    DateTime? CurrentRoundStartedAt,
+    DateTime? EndedAt,
+    DateTime CreatedAt,
+    List<ExchangeResponse> Exchanges,
+    MatchPlacementResponse? Placement = null);
