@@ -44,4 +44,37 @@ public static class PlacementGuard
 
         return null;
     }
+
+    // A phase may not be extended once a later phase has begun. Seeding of a later phase is
+    // derived from the results of the earlier one, so a match added now would move the
+    // standings and re-seed a bracket that is already being played.
+    //
+    // "Begun" is read off the placements: a phase has started as soon as one of its cells is
+    // taken. Matches created by hand carry no placement and are invisible here — that is the
+    // documented cost of placements being optional (invariant 46).
+    public static async Task<string?> EnsureNotSupersededAsync(
+        TournamentDbContext db, Tournament tournament, string phaseId, CancellationToken ct)
+    {
+        var phases = tournament.Format?.Phases;
+        if (phases is null) return null;
+
+        var index = phases.FindIndex(p => p.Id == phaseId);
+        if (index < 0) return null;   // unknown phase is reported by the caller's own check
+
+        var laterPhaseIds = phases.Skip(index + 1).Select(p => p.Id).ToList();
+        if (laterPhaseIds.Count == 0) return null;
+
+        var started = await db.MatchPlacements
+            .AsNoTracking()
+            .Where(x => x.TournamentId == tournament.Id && laterPhaseIds.Contains(x.PhaseId))
+            .Select(x => x.PhaseId)
+            .FirstOrDefaultAsync(ct);
+
+        if (started is null) return null;
+
+        return $"Phase '{started}' has already started, so matches can no longer be added to " +
+               $"the earlier phase '{phaseId}'. The later phase is seeded from this one's " +
+               "results — adding a match now would change that seeding retroactively. Roll the " +
+               "tournament back to Draft if the earlier phase really has to be reopened.";
+    }
 }

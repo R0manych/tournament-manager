@@ -91,6 +91,10 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             var placementError = await PlacementGuard.ValidateAsync(db, tournament, requested, ct);
             if (placementError is not null) return Problem(placementError, statusCode: 400);
 
+            var superseded = await PlacementGuard.EnsureNotSupersededAsync(db, tournament, requested.PhaseId, ct);
+            if (superseded is not null)
+                return Problem(superseded, title: "Phase is closed", statusCode: 409);
+
             var occupied = await db.MatchPlacements.AnyAsync(
                 x => x.TournamentId == tournamentId
                      && x.PhaseId == requested.PhaseId
@@ -320,6 +324,10 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         if (phase is null)
             return Problem($"Round-robin phase '{req.PhaseId}' not found in format.", statusCode: 400);
 
+        var superseded = await PlacementGuard.EnsureNotSupersededAsync(db, tournament, req.PhaseId, ct);
+        if (superseded is not null)
+            return Problem(superseded, title: "Phase is closed", statusCode: 409);
+
         // Groups omitted → use the saved composition of this phase. Labels come along now:
         // the bracket cell of a group-stage match is (phase, group label, pair index),
         // see docs/08 §7.
@@ -364,23 +372,10 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         var isTeam = tournament.ParticipantKind == ParticipantKind.Team;
 
-        // Existing pairs for idempotency (normalised: smaller GUID first).
-        // Walkovers (single participant) are tracked separately.
-        static Guid? P1(Match m) => m.Team1Id ?? m.Fighter1Id;
-        static Guid? P2(Match m) => m.Team2Id ?? m.Fighter2Id;
-
-        var existingPairs = tournament.Matches
-            .Where(m => P1(m).HasValue && P2(m).HasValue)
-            .Select(m => NormPair(P1(m)!.Value, P2(m)!.Value))
-            .ToHashSet();
-        var existingWalkovers = tournament.Matches
-            .Where(m => P1(m).HasValue && !P2(m).HasValue)
-            .Select(m => P1(m)!.Value)
-            .ToHashSet();
-
-        // Cells of this phase that already hold a match. Together with the pair check below
-        // this keeps the endpoint idempotent from both directions: a rerun neither duplicates
-        // a pair nor overwrites a cell.
+        // Idempotency runs on cells alone. It used to run on pairs — "these two have already
+        // met somewhere in this tournament" — which is a broader rule than the domain wants:
+        // the same two may legitimately meet again in a later phase, and in doubleElimination
+        // they meet twice within one phase (grand final and reset). A cell is the honest unit.
         var occupiedCells = (await db.MatchPlacements
                 .AsNoTracking()
                 .Where(x => x.TournamentId == tournamentId && x.PhaseId == req.PhaseId)
@@ -412,7 +407,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             // Singleton group → walkover for the sole participant.
             if (group.Count == 1)
             {
-                if (!existingWalkovers.Add(group[0]) || !occupiedCells.Add((label, 0)))
+                if (!occupiedCells.Add((label, 0)))
                 {
                     skipped++;
                     continue;
@@ -445,8 +440,7 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             {
                 for (int j = i + 1; j < group.Count; j++, slotIndex++)
                 {
-                    var key = NormPair(group[i], group[j]);
-                    if (!existingPairs.Add(key) || !occupiedCells.Add((label, slotIndex)))
+                    if (!occupiedCells.Add((label, slotIndex)))
                     {
                         skipped++;
                         continue;
@@ -492,9 +486,6 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
     // letters run out; those get a positional label, which is still unique within the phase.
     private static string GroupLabel(int index) =>
         index < 26 ? ((char)('A' + index)).ToString() : $"G{index + 1}";
-
-    private static (Guid, Guid) NormPair(Guid a, Guid b) =>
-        a < b ? (a, b) : (b, a);
 
     private static (bool valid, string error) IsValidTransition(MatchStatus from, MatchStatus to) =>
         (from, to) switch
