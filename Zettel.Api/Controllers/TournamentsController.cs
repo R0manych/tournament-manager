@@ -269,8 +269,10 @@ public class TournamentsController(TournamentDbContext db) : ControllerBase
         {
             if (tournament.Status == TournamentStatus.Scheduled)
             {
+                // DoubleLoss counts as a recorded result even when the fight never started
+                // (mutual no-show): the rollback would delete it silently.
                 var started = tournament.Matches.Any(m =>
-                    m.Status is MatchStatus.InProgress or MatchStatus.Completed);
+                    m.Status is MatchStatus.InProgress or MatchStatus.Completed or MatchStatus.DoubleLoss);
                 if (started)
                     return Problem(
                         "Some fights have already started; use the reset from Active status.",
