@@ -17,6 +17,8 @@ public class Match
     public int Score2 { get; set; }
     public int Warnings1 { get; set; }
     public int Warnings2 { get; set; }
+    public int VideoReplays1 { get; set; }
+    public int VideoReplays2 { get; set; }
     public Guid? WinnerId { get; set; }
 
     public int? RoundDurationSeconds { get; set; }

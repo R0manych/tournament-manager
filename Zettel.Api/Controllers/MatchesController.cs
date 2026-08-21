@@ -276,6 +276,32 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         return Ok(match.ToResponse(match.Tournament, await db.PlacementOfAsync(id, ct)));
     }
 
+    // Счётчик запрошенных видеоповторов — по образцу предупреждений: сервер считает,
+    // но ничего не принуждает (АР-12, АР-13). Лимита у него нет ни на встрече, ни в
+    // формате: сколько повторов положено стороне — правило регламента, не модели.
+    [HttpPatch("matches/{id:guid}/video-replays")]
+    public async Task<IActionResult> UpdateVideoReplays(Guid id, UpdateVideoReplaysRequest req, CancellationToken ct)
+    {
+        var match = await db.Matches
+            .Include(m => m.Exchanges)
+            .Include(m => m.Tournament)
+            .Include(m => m.Encounter)
+            .FirstOrDefaultAsync(m => m.Id == id, ct);
+        if (match is null) return NotFound();
+
+        if (match.Status != MatchStatus.InProgress)
+            return Problem("Video replays can only be changed while match is InProgress.", statusCode: 409);
+
+        if (req.Fighter1Delta.HasValue)
+            match.VideoReplays1 = Math.Max(0, match.VideoReplays1 + req.Fighter1Delta.Value);
+
+        if (req.Fighter2Delta.HasValue)
+            match.VideoReplays2 = Math.Max(0, match.VideoReplays2 + req.Fighter2Delta.Value);
+
+        await db.SaveChangesAsync(ct);
+        return Ok(match.ToResponse(match.Tournament, await db.PlacementOfAsync(id, ct)));
+    }
+
     [HttpPost("matches/{id:guid}/advance-round")]
     public async Task<IActionResult> AdvanceRound(Guid id, CancellationToken ct)
     {

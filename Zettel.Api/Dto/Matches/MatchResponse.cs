@@ -13,6 +13,8 @@ public record MatchResponse(
     int Score2,
     int Warnings1,
     int Warnings2,
+    int VideoReplays1,
+    int VideoReplays2,
     int DoubleHitsCount,
     Guid? WinnerId,
     int? RoundDurationSeconds,
