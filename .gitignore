@@ -428,3 +428,4 @@ FodyWeavers.xsd
 *.msm
 *.msp
 /scripts/release.sh
+/Zettel.Api/appsettings.Development.json
