@@ -125,8 +125,23 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
                     encounter.Tournament.Status = TournamentStatus.Active;
                 break;
 
-            case MatchStatus.InProgress when encounter.Status == MatchStatus.Completed:
+            case MatchStatus.InProgress when encounter.Status is MatchStatus.Completed or MatchStatus.DoubleLoss:
                 encounter.EndedAt = null;
+                encounter.WinnerParticipantId = null;
+                if (encounter.StartedAt is null)
+                {
+                    encounter.StartedAt = now;
+                    if (encounter.Tournament.Status == TournamentStatus.Scheduled)
+                        encounter.Tournament.Status = TournamentStatus.Active;
+                }
+                break;
+
+            case MatchStatus.DoubleLoss:
+                // Both teams lose. TryComputeWinner is bypassed on purpose: on a tied score it
+                // would demand a tie-break, and here there is nothing left to break (АР-16).
+                // Unplayed bouts inside the series are left alone — the organiser did not ask
+                // to void them, and the series is terminal anyway.
+                encounter.EndedAt = now;
                 encounter.WinnerParticipantId = null;
                 break;
 
@@ -237,8 +252,11 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
             return Problem("Tie-break fighters must be different.", statusCode: 400);
 
         var basicBouts = encounter.Bouts.Where(b => b.BoutNumber is >= 1 and <= 9).ToList();
+        // A bout stopped by a double loss is finished and still counts towards the total, so
+        // it must not block the tie-break: otherwise a series tied because of such a bout can
+        // neither be completed (TryComputeWinner demands a tie-break) nor get one.
         if (basicBouts.Count != 9
-            || basicBouts.Any(b => b.Status != MatchStatus.Completed))
+            || basicBouts.Any(b => b.Status is not (MatchStatus.Completed or MatchStatus.DoubleLoss)))
             return Problem(
                 "All 9 basic bouts must be completed before creating a tie-break.",
                 statusCode: 409);
@@ -299,7 +317,7 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
             .FirstOrDefaultAsync(e => e.Id == id, ct);
         if (encounter is null) return NotFound();
 
-        if (encounter.Bouts.Any(b => b.Status == MatchStatus.Completed))
+        if (encounter.Bouts.Any(b => b.Status is MatchStatus.Completed or MatchStatus.DoubleLoss))
             return Problem(
                 "Encounter has completed bouts; cancel them first.",
                 statusCode: 409);
@@ -317,13 +335,21 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
             (MatchStatus.InProgress, MatchStatus.Completed) => (true, ""),
             (MatchStatus.InProgress, MatchStatus.Cancelled) => (true, ""),
             (MatchStatus.Completed, MatchStatus.InProgress) => (true, ""),
+            // Double loss for the whole series — same four transitions as a single fight.
+            (MatchStatus.Scheduled, MatchStatus.DoubleLoss) => (true, ""),
+            (MatchStatus.InProgress, MatchStatus.DoubleLoss) => (true, ""),
+            (MatchStatus.Completed, MatchStatus.DoubleLoss) => (true, ""),
+            (MatchStatus.DoubleLoss, MatchStatus.InProgress) => (true, ""),
             _ => (false, $"Cannot transition encounter from {from} to {to}.")
         };
 
     private static (bool canComplete, string error, Guid? winner) TryComputeWinner(Encounter e)
     {
+        // DoubleLoss bouts keep contributing: the score they were stopped at is real and must
+        // not vanish from the series total the moment the status is set (АР-16). The same
+        // filter lives in EncounterMappingExtensions — both have to agree.
         var contributing = e.Bouts
-            .Where(m => m.Status is MatchStatus.InProgress or MatchStatus.Completed)
+            .Where(m => m.Status is MatchStatus.InProgress or MatchStatus.Completed or MatchStatus.DoubleLoss)
             .ToList();
         var score1 = contributing.Sum(m => m.Score1);
         var score2 = contributing.Sum(m => m.Score2);

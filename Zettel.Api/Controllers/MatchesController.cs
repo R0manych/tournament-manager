@@ -204,8 +204,24 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
                 if (match.Tournament.Status == TournamentStatus.Scheduled)
                     match.Tournament.Status = TournamentStatus.Active;
                 break;
-            case MatchStatus.InProgress when match.Status == MatchStatus.Completed:
+            case MatchStatus.InProgress when match.Status is MatchStatus.Completed or MatchStatus.DoubleLoss:
                 match.EndedAt = null;
+                match.WinnerId = null;
+                // A mutual no-show never started, so it has no countdown anchor (ТЗ §7.4).
+                // Putting it back into the fight starts round one, exactly as Scheduled does.
+                if (match.StartedAt is null)
+                {
+                    match.StartedAt = now;
+                    match.CurrentRoundNumber = 1;
+                    match.CurrentRoundStartedAt = now;
+                    if (match.Tournament.Status == TournamentStatus.Scheduled)
+                        match.Tournament.Status = TournamentStatus.Active;
+                }
+                break;
+            case MatchStatus.DoubleLoss:
+                // Both lose, nobody wins. Score and the start marks are left exactly as they
+                // are: the fight did happen, only its outcome is being recorded (АР-16).
+                match.EndedAt = now;
                 match.WinnerId = null;
                 break;
             case MatchStatus.Completed:
@@ -220,7 +236,8 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
 
         // Cancelling frees the bracket cell, so the organiser can recreate the fight there
         // without an extra call (docs/08, ОВ-3). The cancelled match keeps existing, it just
-        // stops belonging to the bracket.
+        // stops belonging to the bracket. DoubleLoss deliberately does not free it: the fight
+        // happened and stays in its cell, it just sends nobody onward (АР-16).
         if (newStatus == MatchStatus.Cancelled)
         {
             var freed = await db.MatchPlacements.FirstOrDefaultAsync(x => x.MatchId == id, ct);
@@ -491,6 +508,13 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
             (MatchStatus.InProgress, MatchStatus.Completed) => (true, ""),
             (MatchStatus.InProgress, MatchStatus.Cancelled) => (true, ""),
             (MatchStatus.Completed, MatchStatus.InProgress) => (true, ""),
+            // Double loss: before the fight (mutual no-show), during it, or decided after
+            // it ended. WalkoverWin → DoubleLoss stays forbidden: a bye is terminal by
+            // construction. The way back is the fight itself, mirroring Completed.
+            (MatchStatus.Scheduled, MatchStatus.DoubleLoss) => (true, ""),
+            (MatchStatus.InProgress, MatchStatus.DoubleLoss) => (true, ""),
+            (MatchStatus.Completed, MatchStatus.DoubleLoss) => (true, ""),
+            (MatchStatus.DoubleLoss, MatchStatus.InProgress) => (true, ""),
             _ => (false, $"Cannot transition from {from} to {to}.")
         };
 
