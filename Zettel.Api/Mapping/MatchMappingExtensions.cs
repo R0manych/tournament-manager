@@ -25,6 +25,7 @@ public static class MatchMappingExtensions
             m.Team2Id ?? m.Fighter2Id,
             m.ScheduledAt, m.Status.ToString(),
             m.Score1, m.Score2, m.Warnings1, m.Warnings2,
+            m.VideoReplays1, m.VideoReplays2,
             m.Exchanges.Count(e => e.IsDoubleHit),
             m.WinnerId,
             m.RoundDurationSeconds, m.MaxDoubles, m.MaxWarnings,
