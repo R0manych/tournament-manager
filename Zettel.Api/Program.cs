@@ -25,7 +25,6 @@ if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.MapScalarApiReference();
-    app.Urls.Add("http://0.0.0.0:5184");
 }
 
 app.UseHttpsRedirection();
