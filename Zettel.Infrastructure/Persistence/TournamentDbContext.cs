@@ -24,6 +24,7 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
     public DbSet<Encounter> Encounters => Set<Encounter>();
     public DbSet<TournamentGroup> TournamentGroups => Set<TournamentGroup>();
     public DbSet<MatchPlacement> MatchPlacements => Set<MatchPlacement>();
+    public DbSet<Piste> Pistes => Set<Piste>();
     //public DbSet<Document> Documents => Set<Document>();
 
     protected override void OnModelCreating(ModelBuilder m)
@@ -72,6 +73,11 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
                 .OnDelete(DeleteBehavior.Cascade);
 
             b.HasMany(t => t.Groups)
+                .WithOne(x => x.Tournament)
+                .HasForeignKey(x => x.TournamentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            b.HasMany(t => t.Pistes)
                 .WithOne(x => x.Tournament)
                 .HasForeignKey(x => x.TournamentId)
                 .OnDelete(DeleteBehavior.Cascade);
@@ -147,7 +153,19 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
                 .IsRequired(false)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            // SetNull, а не Restrict: удаление турнира каскадом сносит и встречи, и ристалища,
+            // и порядок этих каскадов в Postgres не задан — Restrict давал бы случайное падение
+            // по FK. Инвариант 57 всё равно не даёт удалить ристалище с незавершёнными
+            // назначениями; у завершённых при удалении площадки ссылка обнуляется — сама
+            // площадка, на которую она указывала, перестала существовать.
+            b.HasOne(x => x.Piste)
+                .WithMany()
+                .HasForeignKey(x => x.PisteId)
+                .IsRequired(false)
+                .OnDelete(DeleteBehavior.SetNull);
+
             b.HasIndex(x => new { x.TournamentId, x.Status });
+            b.HasIndex(x => new { x.PisteId, x.Status }).HasFilter("\"PisteId\" IS NOT NULL");
             b.HasIndex(x => x.Fighter1Id);
             b.HasIndex(x => x.Fighter2Id);
             b.HasIndex(x => new { x.EncounterId, x.BoutNumber })
@@ -231,11 +249,31 @@ public class TournamentDbContext(DbContextOptions<TournamentDbContext> options) 
                 .HasForeignKey(e => e.Participant2Id)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            b.HasOne(e => e.Piste)
+                .WithMany()
+                .HasForeignKey(e => e.PisteId)
+                .IsRequired(false)
+                .OnDelete(DeleteBehavior.SetNull);
+
             b.HasIndex(e => new { e.TournamentId, e.Status });
+            b.HasIndex(e => new { e.PisteId, e.Status }).HasFilter("\"PisteId\" IS NOT NULL");
 
             b.ToTable(t => t.HasCheckConstraint(
                 "CK_Encounter_Participant1NotEqualParticipant2",
                 "\"Participant1Id\" <> \"Participant2Id\""));
+        });
+
+        // Piste — площадка турнира (docs/09, инварианты 52–58). Имя уникально внутри
+        // турнира по образцу команды: селектор ристалища подписан именем, и две «Ристалища 1»
+        // в одном списке организатор не различит.
+        m.Entity<Piste>(b =>
+        {
+            b.HasKey(p => p.Id);
+            b.Property(p => p.Name).IsRequired().HasMaxLength(100);
+            b.Property(p => p.CreatedAt).HasColumnType("timestamp with time zone");
+
+            b.HasIndex(p => new { p.TournamentId, p.Name }).IsUnique();
+            b.HasIndex(p => new { p.TournamentId, p.OrderIndex });
         });
 
         // TournamentGroup — ParticipantIds maps to uuid[] (ordered, polymorphic ids)

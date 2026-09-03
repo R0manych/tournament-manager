@@ -22,7 +22,8 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
-            .Include(m => m.Encounter)
+            .Include(m => m.Encounter).ThenInclude(e => e!.Piste)
+            .Include(m => m.Piste)
             .FirstOrDefaultAsync(m => m.Id == matchId, ct);
 
         if (match is null) return NotFound();
@@ -66,7 +67,8 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
         var exchange = await db.Exchanges
             .Include(e => e.Match).ThenInclude(m => m.Exchanges)
             .Include(e => e.Match.Tournament)
-            .Include(e => e.Match.Encounter)
+            .Include(e => e.Match.Encounter).ThenInclude(x => x!.Piste)
+            .Include(e => e.Match.Piste)
             .FirstOrDefaultAsync(e => e.Id == id, ct);
 
         if (exchange is null) return NotFound();
@@ -101,7 +103,8 @@ public class ExchangesController(TournamentDbContext db) : ControllerBase
         var exchange = await db.Exchanges
             .Include(e => e.Match).ThenInclude(m => m.Exchanges)
             .Include(e => e.Match.Tournament)
-            .Include(e => e.Match.Encounter)
+            .Include(e => e.Match.Encounter).ThenInclude(x => x!.Piste)
+            .Include(e => e.Match.Piste)
             .FirstOrDefaultAsync(e => e.Id == id, ct);
 
         if (exchange is null) return NotFound();

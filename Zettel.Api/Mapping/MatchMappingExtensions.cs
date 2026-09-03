@@ -39,6 +39,12 @@ public static class MatchMappingExtensions
             m.MaxDoubles ?? ov?.MaxDoubles ?? t?.DefaultMaxDoubles,
             m.MaxWarnings ?? ov?.MaxWarnings ?? t?.DefaultMaxWarnings,
             m.EncounterId, m.BoutNumber, m.TargetCumulativeScore,
+            // Имя — всегда у эффективного ристалища: подпись на табло и в списке относится к
+            // площадке, где бой идёт, а у боута это площадка его серии (docs/09 §3.2). Оно
+            // едет вместе с id, чтобы табло не делало второй запрос ради подписи; если
+            // навигация не подгружена, остаётся null — id при этом верен.
+            m.PisteId, m.EffectivePisteId,
+            m.PisteId is not null ? m.Piste?.Name : m.Encounter?.Piste?.Name,
             m.StartedAt, m.CurrentRoundNumber, m.CurrentRoundStartedAt,
             m.EndedAt, m.CreatedAt,
             m.Exchanges.OrderBy(e => e.Sequence).Select(e => e.ToResponse()).ToList(),

@@ -27,6 +27,7 @@ public static class EncounterMappingExtensions
             e.Id, e.TournamentId, e.Participant1Id, e.Participant2Id,
             e.ScheduledAt, e.Status.ToString(),
             e.TargetTotalScore, e.BoutDurationSeconds,
+            e.PisteId, e.Piste?.Name,
             score1, score2,
             e.WinnerParticipantId, e.PriorityParticipantId,
             requiresTieBreak,

@@ -16,17 +16,28 @@ namespace Zettel.Api.Controllers;
 public class MatchesController(TournamentDbContext db) : ControllerBase
 {
     [HttpGet("tournaments/{tournamentId:guid}/matches")]
-    public async Task<IActionResult> GetByTournament(Guid tournamentId, CancellationToken ct)
+    public async Task<IActionResult> GetByTournament(
+        Guid tournamentId, [FromQuery] Guid? pisteId, CancellationToken ct)
     {
         var tournamentExists = await db.Tournaments.AnyAsync(t => t.Id == tournamentId, ct);
         if (!tournamentExists) return NotFound();
 
-        var matches = await db.Matches
+        var query = db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
-            .Include(m => m.Encounter)
+            .Include(m => m.Encounter).ThenInclude(e => e!.Piste)
+            .Include(m => m.Piste)
             .AsNoTracking()
-            .Where(m => m.TournamentId == tournamentId)
+            .Where(m => m.TournamentId == tournamentId);
+
+        // Фильтр по эффективному ристалищу (docs/09 §5.4): табло и очередь площадки иначе
+        // тянули бы все встречи турнира и отсеивали их на клиенте. Боут попадает в выборку
+        // по ристалищу своей серии — своего у него нет (инвариант 54).
+        if (pisteId is not null)
+            query = query.Where(m => m.PisteId == pisteId
+                                     || (m.Encounter != null && m.Encounter.PisteId == pisteId));
+
+        var matches = await query
             .OrderBy(m => m.CreatedAt)
             .ToListAsync(ct);
 
@@ -48,7 +59,8 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
-            .Include(m => m.Encounter)
+            .Include(m => m.Encounter).ThenInclude(e => e!.Piste)
+            .Include(m => m.Piste)
             .AsNoTracking()
             .FirstOrDefaultAsync(m => m.Id == id, ct);
 
@@ -164,8 +176,29 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches.FindAsync([id], ct);
         if (match is null) return NotFound();
 
-        if (match.Status != MatchStatus.Scheduled)
+        // Ристалище — не настройка боя: перевести идущий бой на другую площадку законно
+        // (сломался таймер, освободилось соседнее ристалище), и запрет «только в Scheduled»
+        // на него не распространяется (docs/09 §5.2). Границы задают инварианты 54–56.
+        // Тело при этом по-прежнему заменяет блок настроек целиком, поэтому «трогает ли
+        // запрос настройки» определяется сравнением с текущими значениями, а не наличием
+        // полей в JSON.
+        var changesSettings =
+            req.ScheduledAt != match.ScheduledAt
+            || req.RoundDurationSeconds != match.RoundDurationSeconds
+            || req.MaxDoubles != match.MaxDoubles
+            || req.MaxWarnings != match.MaxWarnings;
+
+        if (changesSettings && match.Status != MatchStatus.Scheduled)
             return Problem("Match settings can only be changed while status is Scheduled.", statusCode: 409);
+
+        if (req.PisteId != match.PisteId)
+        {
+            var error = await PisteGuard.ValidateMatchAssignmentAsync(db, match, req.PisteId, ct);
+            if (error is not null)
+                return Problem(error.Detail, title: error.Title, statusCode: error.Status);
+
+            match.PisteId = req.PisteId;
+        }
 
         match.ScheduledAt = req.ScheduledAt;
         match.RoundDurationSeconds = req.RoundDurationSeconds;
@@ -185,12 +218,23 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
-            .Include(m => m.Encounter)
+            .Include(m => m.Encounter).ThenInclude(e => e!.Piste)
+            .Include(m => m.Piste)
             .FirstOrDefaultAsync(m => m.Id == id, ct);
         if (match is null) return NotFound();
 
         var (valid, error) = IsValidTransition(match.Status, newStatus);
         if (!valid) return Problem(error, statusCode: 409);
+
+        // Инвариант 56: на ристалище одновременно идёт не больше одной встречи. Проверяется
+        // по эффективной площадке, то есть боут занимает ристалище своей серии — и потому
+        // не спотыкается ни о неё, ни о предыдущий боут той же серии.
+        if (newStatus == MatchStatus.InProgress && match.EffectivePisteId is { } pisteId)
+        {
+            var busy = await PisteGuard.EnsureFreeAsync(db, pisteId, match.Id, match.EncounterId, ct);
+            if (busy is not null)
+                return Problem(busy.Detail, title: busy.Title, statusCode: busy.Status);
+        }
 
         var now = DateTime.UtcNow;
 
@@ -259,7 +303,8 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
-            .Include(m => m.Encounter)
+            .Include(m => m.Encounter).ThenInclude(e => e!.Piste)
+            .Include(m => m.Piste)
             .FirstOrDefaultAsync(m => m.Id == id, ct);
         if (match is null) return NotFound();
 
@@ -285,7 +330,8 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
-            .Include(m => m.Encounter)
+            .Include(m => m.Encounter).ThenInclude(e => e!.Piste)
+            .Include(m => m.Piste)
             .FirstOrDefaultAsync(m => m.Id == id, ct);
         if (match is null) return NotFound();
 
@@ -308,7 +354,8 @@ public class MatchesController(TournamentDbContext db) : ControllerBase
         var match = await db.Matches
             .Include(m => m.Exchanges)
             .Include(m => m.Tournament)
-            .Include(m => m.Encounter)
+            .Include(m => m.Encounter).ThenInclude(e => e!.Piste)
+            .Include(m => m.Piste)
             .FirstOrDefaultAsync(m => m.Id == id, ct);
         if (match is null) return NotFound();
 

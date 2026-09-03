@@ -11,6 +11,8 @@ public record EncounterResponse(
     string Status,
     int TargetTotalScore,
     int BoutDurationSeconds,
+    Guid? PisteId,
+    string? PisteName,
     int Score1,
     int Score2,
     Guid? WinnerParticipantId,

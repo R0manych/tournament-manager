@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zettel.Api.Common;
 using Zettel.Api.Dto.Encounters;
 using Zettel.Api.Dto.Matches;
 using Zettel.Api.Mapping;
@@ -22,6 +23,7 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
 
         var encounters = await db.Encounters
             .Include(e => e.Bouts).ThenInclude(b => b.Exchanges)
+            .Include(e => e.Piste)
             .AsNoTracking()
             .Where(e => e.TournamentId == tournamentId)
             .OrderBy(e => e.CreatedAt)
@@ -35,6 +37,7 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
     {
         var encounter = await db.Encounters
             .Include(e => e.Bouts).ThenInclude(b => b.Exchanges)
+            .Include(e => e.Piste)
             .Include(e => e.Tournament)
             .AsNoTracking()
             .FirstOrDefaultAsync(e => e.Id == id, ct);
@@ -98,6 +101,28 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
             encounter.ToResponse(tournament));
     }
 
+    // Частичное обновление серии заведено ради одного поля — ристалища (docs/09 §5.2):
+    // назначается серия целиком, боуты наследуют её площадку и собственного PisteId не
+    // имеют (инвариант 54). Отсутствие поля равнозначно явному null — снять назначение.
+    [HttpPatch("encounters/{id:guid}")]
+    public async Task<IActionResult> Patch(Guid id, PatchEncounterRequest req, CancellationToken ct)
+    {
+        var encounter = await db.Encounters.FindAsync([id], ct);
+        if (encounter is null) return NotFound();
+
+        if (req.PisteId != encounter.PisteId)
+        {
+            var error = await PisteGuard.ValidateEncounterAssignmentAsync(db, encounter, req.PisteId, ct);
+            if (error is not null)
+                return Problem(error.Detail, title: error.Title, statusCode: error.Status);
+
+            encounter.PisteId = req.PisteId;
+            await db.SaveChangesAsync(ct);
+        }
+
+        return NoContent();
+    }
+
     [HttpPatch("encounters/{id:guid}/status")]
     public async Task<IActionResult> SetStatus(
         Guid id, UpdateStatusRequest req, CancellationToken ct)
@@ -107,12 +132,23 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
 
         var encounter = await db.Encounters
             .Include(e => e.Bouts).ThenInclude(b => b.Exchanges)
+            .Include(e => e.Piste)
             .Include(e => e.Tournament)
             .FirstOrDefaultAsync(e => e.Id == id, ct);
         if (encounter is null) return NotFound();
 
         var (valid, error) = IsValidTransition(encounter.Status, newStatus);
         if (!valid) return Problem(error, statusCode: 409);
+
+        // Инвариант 56 — тот же, что у одиночной встречи: серия занимает площадку целиком,
+        // поэтому вторую на ту же площадку запустить нельзя. Её собственные боуты из
+        // проверки исключены — они и есть эта серия.
+        if (newStatus == MatchStatus.InProgress && encounter.PisteId is { } pisteId)
+        {
+            var busy = await PisteGuard.EnsureFreeAsync(db, pisteId, null, encounter.Id, ct);
+            if (busy is not null)
+                return Problem(busy.Detail, title: busy.Title, statusCode: busy.Status);
+        }
 
         var now = DateTime.UtcNow;
 
@@ -169,6 +205,7 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
     {
         var encounter = await db.Encounters
             .Include(e => e.Bouts).ThenInclude(b => b.Exchanges)
+            .Include(e => e.Piste)
             .Include(e => e.Tournament)
             .FirstOrDefaultAsync(e => e.Id == id, ct);
         if (encounter is null) return NotFound();
@@ -244,6 +281,7 @@ public class EncountersController(TournamentDbContext db) : ControllerBase
     {
         var encounter = await db.Encounters
             .Include(e => e.Bouts).ThenInclude(b => b.Exchanges)
+            .Include(e => e.Piste)
             .Include(e => e.Tournament)
             .FirstOrDefaultAsync(e => e.Id == id, ct);
         if (encounter is null) return NotFound();

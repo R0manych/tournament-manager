@@ -4,4 +4,5 @@ public record PatchMatchRequest(
     DateTime? ScheduledAt,
     int? RoundDurationSeconds,
     int? MaxDoubles,
-    int? MaxWarnings);
+    int? MaxWarnings,
+    Guid? PisteId);

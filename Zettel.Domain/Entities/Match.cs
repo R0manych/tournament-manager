@@ -35,7 +35,17 @@ public class Match
     public int? BoutNumber { get; set; }
     public int? TargetCumulativeScore { get; set; }
 
+    // Ристалище назначается встрече, а серия — целиком: боут физически идёт там же, где
+    // идёт его серия, поэтому у боута собственный PisteId всегда null (инвариант 54), а
+    // площадка резолвится через серию. Два источника истины здесь дали бы боут, «уехавший»
+    // с площадки своей серии.
+    public Guid? PisteId { get; set; }
+
     public bool IsTeamMatch => Team1Id.HasValue && Team2Id.HasValue;
+
+    // Не маппится в БД (нет сеттера) — только для мапперов. В LINQ-запросах то же правило
+    // пишется выражением: EF не переведёт вычисляемое свойство в SQL.
+    public Guid? EffectivePisteId => PisteId ?? Encounter?.PisteId;
 
     public Tournament Tournament { get; set; } = null!;
     public Fighter? Fighter1 { get; set; }
@@ -43,5 +53,6 @@ public class Match
     public Team? Team1 { get; set; }
     public Team? Team2 { get; set; }
     public Encounter? Encounter { get; set; }
+    public Piste? Piste { get; set; }
     public List<Exchange> Exchanges { get; set; } = new();
 }

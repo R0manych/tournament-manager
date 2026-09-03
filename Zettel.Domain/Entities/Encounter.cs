@@ -18,6 +18,10 @@ public class Encounter
     public Guid? WinnerParticipantId { get; set; }
     public Guid? PriorityParticipantId { get; set; }
 
+    // Серия занимает площадку целиком, от первого боута до тай-брейка; боуты наследуют
+    // её через Match.EffectivePisteId (docs/09 §3.2).
+    public Guid? PisteId { get; set; }
+
     public DateTime? StartedAt { get; set; }
     public DateTime? EndedAt { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -25,5 +29,6 @@ public class Encounter
     public Tournament Tournament { get; set; } = null!;
     public Team Participant1 { get; set; } = null!;
     public Team Participant2 { get; set; } = null!;
+    public Piste? Piste { get; set; }
     public List<Match> Bouts { get; set; } = new();
 }
